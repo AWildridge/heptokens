@@ -106,7 +106,7 @@ def export(cfg: DictConfig) -> None:
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     log.info(f"Loading VQ-VAE checkpoint: {cfg.ckpt_path} (device={device})")
-    model = LitVqVae.load_from_checkpoint(cfg.ckpt_path, map_location=device)
+    model = LitVqVae.load_from_checkpoint(cfg.ckpt_path, map_location=device, weights_only=False)
     model.eval()
 
     output_dir = Path(cfg.output_dir)
