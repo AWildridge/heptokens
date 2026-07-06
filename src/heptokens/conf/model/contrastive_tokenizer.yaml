@@ -1,0 +1,50 @@
+---
+# configs/model/contrastive_tokenizer.yaml
+# Continuous per-constituent tokenizer trained with a two-view VICReg objective.
+# No decoder, no codebook: the encoder output is the token.
+_target_: heptokens.models.contrastive.LitContrastiveTokenizer
+encoder:
+  _target_: heptokens.models.coders.Encoder
+  _partial_: true
+  model:
+    _target_: heptokens.models.transformer.Transformer
+    _partial_: true
+    d_model: 128
+    n_heads: 8
+    num_layers: 4
+    dim_feedforward: 512
+    dropout: 0.
+    activation: gelu
+loss_fn:
+  _target_: heptokens.models.losses.vicreg_loss
+  _partial_: true
+  sim_weight: 25.0
+  var_weight: 25.0
+  cov_weight: 1.0
+augmentation:
+  # On-the-fly two-view augmentation. Alternatively, remove this block and add
+  # a heptokens.data.augmentations.TwoViewTransform to the datamodule
+  # transforms. Index conventions follow the datamodule's set_features order;
+  # adjust per experiment. Apply to physical-unit features where possible.
+  _target_: heptokens.data.augmentations.ConstituentAugmentation
+  pt_indices: [0]
+  eta_indices: [1]
+  phi_indices: [2]
+  categorical_indices: []
+  pt_smear_sigma: 0.05
+  angle_smear_sigma: 0.02
+  noise_sigma: 0.0
+  rotate_phi: false
+latent_dim: 16
+proj_dim: 32
+proj_hidden: 64
+learning_rate: 1e-3
+optimizer:
+  _target_: torch.optim.Adam
+  _partial_: true
+  lr: 1.0e-3
+scheduler:
+  _target_: heptokens.models.utils.warmup_cosine_scheduler
+  _partial_: true
+  warmup_epochs: 5
+  min_lr: 1.0e-6

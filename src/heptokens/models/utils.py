@@ -149,6 +149,116 @@ def compute_codebook_utilization(
     return utilizations
 
 
+def compute_embedding_collapse(z: T.Tensor, eps: float = 1e-8) -> dict:
+    """Collapse diagnostics for continuous embeddings — the analog of
+    ``compute_codebook_utilization`` for non-quantized tokens.
+
+    Args:
+        z: Flattened valid embeddings [n_points, dim].
+
+    Returns:
+        dict with:
+        - ``std_mean`` / ``std_min``: per-dimension std statistics (0 ⇒ collapse)
+        - ``active_dims``: fraction of dimensions with std > 0.01
+        - ``effective_rank``: exp of the entropy of the normalised singular
+          values (1 ⇒ all variance in one direction)
+        - ``corr_offdiag``: mean |off-diagonal| of the correlation matrix
+          (1 ⇒ fully redundant dimensions)
+    """
+    if z.shape[0] > 4096:
+        idx = T.randperm(z.shape[0], device=z.device)[:4096]
+        z = z[idx]
+    z = z.float()
+    std = z.std(dim=0)
+
+    centered = z - z.mean(dim=0)
+    svals = T.linalg.svdvals(centered)
+    p = svals.pow(2) / (svals.pow(2).sum() + eps)
+    effective_rank = T.exp(-(p * (p + eps).log()).sum())
+
+    denom = std.clamp(min=eps)
+    corr = (centered.T @ centered) / max(z.shape[0] - 1, 1)
+    corr = corr / (denom.unsqueeze(0) * denom.unsqueeze(1))
+    n_dim = corr.shape[0]
+    off = (corr.abs().sum() - corr.diagonal().abs().sum()) / max(n_dim * (n_dim - 1), 1)
+
+    return {
+        "std_mean": std.mean(),
+        "std_min": std.min(),
+        "active_dims": (std > 0.01).float().mean(),
+        "effective_rank": effective_rank,
+        "corr_offdiag": off,
+    }
+
+
+def compute_alignment_uniformity(
+    za: T.Tensor,
+    zb: T.Tensor | None = None,
+    t: float = 2.0,
+    max_points: int = 2048,
+) -> dict:
+    """Alignment & uniformity metrics (Wang & Isola, arXiv:2005.10242).
+
+    Args:
+        za: Embeddings [n_points, dim] (normalised internally).
+        zb: Optional matched second-view embeddings; enables the alignment
+            metric (mean squared distance between positive pairs).
+        t: Uniformity temperature.
+
+    Returns:
+        dict with ``uniformity`` (lower = more uniform on the hypersphere)
+        and, when ``zb`` is given, ``alignment`` (lower = better).
+    """
+    if za.shape[0] > max_points:
+        idx = T.randperm(za.shape[0], device=za.device)[:max_points]
+        za = za[idx]
+        zb = zb[idx] if zb is not None else None
+
+    za_n = T.nn.functional.normalize(za.float(), dim=-1)
+    sq_dists = T.cdist(za_n, za_n).pow(2)
+    n = za_n.shape[0]
+    off_diag = ~T.eye(n, dtype=T.bool, device=za_n.device)
+    uniformity = T.log(T.exp(-t * sq_dists[off_diag]).mean())
+
+    out = {"uniformity": uniformity}
+    if zb is not None:
+        zb_n = T.nn.functional.normalize(zb.float(), dim=-1)
+        out["alignment"] = (za_n - zb_n).pow(2).sum(dim=-1).mean()
+    return out
+
+
+def compute_knn_pid_purity(
+    z: T.Tensor,
+    pid: T.Tensor,
+    k: int = 8,
+    max_points: int = 2048,
+) -> T.Tensor:
+    """Fraction of k-nearest neighbours sharing the anchor's PID.
+
+    A physics-faithfulness probe: high purity means the embedding metric
+    groups same-species particles together.
+
+    Args:
+        z: Flattened valid embeddings [n_points, dim].
+        pid: Matching categorical PID values [n_points].
+        k: Number of neighbours (excluding the anchor itself).
+    """
+    if z.shape[0] > max_points:
+        idx = T.randperm(z.shape[0], device=z.device)[:max_points]
+        z, pid = z[idx], pid[idx]
+
+    n = z.shape[0]
+    k = min(k, n - 1)
+    if k < 1:
+        return T.tensor(float("nan"), device=z.device)
+
+    dists = T.cdist(z.float(), z.float())
+    dists.fill_diagonal_(float("inf"))
+    knn_idx = dists.topk(k, largest=False).indices  # [n, k]
+    same = pid[knn_idx] == pid.unsqueeze(1)
+    return same.float().mean()
+
+
 class JetBackbone(nn.Module):
     """Generalised backbone for the jet models.
 

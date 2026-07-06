@@ -19,6 +19,7 @@ dependencies = [
 [project.scripts]
 heptokens-train = "heptokens.train:main"
 heptokens-export = "heptokens.export_tokens:main"
+heptokens-export-latents = "heptokens.export_latents:main"
 
 [build-system]
 requires = ["hatchling"]
