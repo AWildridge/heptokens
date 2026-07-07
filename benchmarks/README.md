@@ -1,4 +1,59 @@
-# Tokenizer validation benchmark — continuous contrastive vs VQ-VAE
+# Tokenizer benchmarks
+
+## Campaign 2 — particle-library tokenizer on Aspen Open Jets (real CMS)
+
+**The user-specified objective:** particles with **same PID, same charge,
+ΔpT ≤ 10%, |Δη| ≤ 0.1 and |Δφ| ≤ 0.1** (same detector region) are positives;
+everything else is repelled. Context-free per-particle **MLP Φ** (PID/charge
+via embeddings — same particle ⇒ same token anywhere), trained with a
+**graded physics-kernel** soft-target contrastive loss (hard PID+charge gates,
+Gaussian grading on the kinematics). Data: AOJ `RunG_batch0` — 1.96M real CMS
+jets, absolute η–φ, PDG ∈ {±211, ±13, ±11, 22, 130}. No labels, no
+augmentations, no views.
+
+**Criterion recall@8** — of an anchor's *available* criterion partners in a
+30k pool, the fraction ranked inside its top-8 neighbours (1.0 = perfect;
+plain precision@k is availability-limited at criterion density ~3e-5 and
+flattens all methods):
+
+| provider | recall@8 ↑ | kNN PID purity | within-PID pT R² | eff. rank |
+|---|---|---|---|---|
+| **library (graded, coords)** | **0.9992** | 0.910 | 0.18 | 15.8/16 |
+| library (graded, dR cone) | 0.9985 | 0.911 | 0.16 | 15.7 |
+| library (hard windows) | 0.9935 | 0.664 | 0.30 | 15.4 |
+| null: PID one-hot ⊕ kinematics (untrained) | 0.9833 | 0.993 | **0.95** | 5.1 |
+| raw kinematics only | 0.300 | 0.290 | 0.95 | 3.0 |
+| v1 transformer-contrastive | 0.052 | 0.284 | 0.84 | 4.4 |
+| v1 VQ z_q | 0.608 | 0.298 | 0.97 | 3.7 |
+
+**Findings**
+
+1. **The library criterion is achieved.** 99.92% of available
+   same-PID/charge/pT/region partners rank in the top-8 — a ~20× reduction in
+   retrieval misses vs the untrained hand-crafted null (1.7% → 0.08%): the
+   learning pays rent on the criterion itself. `library_pid_islands.png`
+   shows clean species islands with kinematic substructure on real CMS data.
+2. **Graded kernel > hard windows**, as predicted: fewer retrieval misses
+   (8×) and far better species organization (purity 0.91 vs 0.66);
+   `library_cliff_check.png` shows the hard variant's geometry kinking ~2×
+   steeper past the ΔpT window edge.
+3. **Context-free MLP was the right call:** the jet-context-aware v1
+   transformer scores 0.052 on criterion recall — context leakage destroys
+   the library property.
+4. **Open deficiency — within-island kinematic compression:** linear pT
+   recovery inside a PID class is R² 0.18 vs 0.95 for the null. For the
+   AI-ready release (observable recovery matters), next iteration should add
+   kinematic-preservation pressure: an auxiliary feature-prediction term,
+   multi-scale ΔpT kernels, or a hybrid release (token ⊕ scaled kinematics).
+5. Region definition (per-coordinate vs dR cone) is a wash on these metrics —
+   per-coordinate kept as default per spec.
+
+Reproduce: `prepare_aoj.py` → `train_tokenizers.py --model library --data aoj
+[--region cone | --hard-windows]` → `eval_library.py`.
+
+---
+
+## Campaign 1 — continuous contrastive vs VQ-VAE (jets5c)
 
 GPU validation campaign (A100, torch 2.5.1) on a **620k-jet, 5-class** dataset
 (≤150 constituents × (pT, Δη, Δφ), zero-padded). Matched budgets: identical

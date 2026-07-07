@@ -23,10 +23,13 @@ Run after the AOJ training chain: python eval_library.py
 import copy
 import json
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from sklearn.decomposition import PCA
 
 from common import FIGURES_DIR, LIBRARY_CRITERION, SEED, TOKENIZER_DIR, make_datamodule, make_transforms
+from make_plots import BASE, C_CLASS, INK, INK2, MUTED, savefig  # shared style (rcParams on import)
 
 from heptokens.models.contrastive import LitContrastiveTokenizer
 from heptokens.models.utils import (
@@ -106,6 +109,54 @@ def embedding_providers(raw, scaled, mask):
     return out
 
 
+@torch.no_grad()
+def criterion_recall_at_k(z, raw_flat, k=8, pool=30_000, chunk=2_000):
+    """Availability-aware retrieval: of an anchor's *available* criterion
+    partners in the pool, what fraction rank inside its top-k neighbours?
+
+    Precision@k at realistic pool sizes is bounded by partner availability
+    (criterion density ~3e-5), which flattens all methods to the same lift.
+    Recall against the availability ceiling — hits@k / min(k, n_partners),
+    averaged over anchors that have at least one partner — is 1.0 for a
+    perfect embedding regardless of density.
+    """
+    rng = np.random.default_rng(SEED)
+    n = min(pool, len(z))
+    sel = torch.from_numpy(rng.choice(len(z), n, replace=False))
+    z = torch.nn.functional.normalize(z[sel].to(DEVICE).float(), dim=-1)
+    f = raw_flat[sel].to(DEVICE)
+
+    pid, charge = f[:, 3], f[:, 4].round()
+    pt, eta, phi = f[:, 0], f[:, 1], f[:, 2]
+
+    recalls = []
+    for start in range(0, n, chunk):
+        end = min(start + chunk, n)
+        dpt = (pt[start:end, None] - pt[None, :]).abs()
+        scale = torch.maximum(pt[start:end, None], pt[None, :]).clamp(min=1e-6)
+        crit = (dpt / scale <= 0.1)
+        crit &= (eta[start:end, None] - eta[None, :]).abs() <= 0.1
+        dphi = (phi[start:end, None] - phi[None, :] + np.pi) % (2 * np.pi) - np.pi
+        crit &= dphi.abs() <= 0.1
+        crit &= pid[start:end, None] == pid[None, :]
+        crit &= charge[start:end, None] == charge[None, :]
+        rows = torch.arange(start, end, device=DEVICE)
+        crit[rows - start, rows] = False  # self
+
+        n_partners = crit.sum(dim=1)
+        has = n_partners > 0
+        if not has.any():
+            continue
+
+        sims = z[start:end] @ z.T
+        sims[rows - start, rows] = float("-inf")
+        topk = sims.topk(k, dim=1).indices  # [c, k]
+        hits = torch.gather(crit, 1, topk).sum(dim=1).float()
+        recalls.append((hits[has] / n_partners[has].clamp(max=k).float()).cpu())
+
+    return float(torch.cat(recalls).mean()) if recalls else float("nan")
+
+
 def within_pid_pt_r2(z, raw_flat):
     """Mean R^2 of linear pT recovery from tokens within each PID group."""
     pid = np.abs(raw_flat[:, 3].numpy())
@@ -125,30 +176,50 @@ def within_pid_pt_r2(z, raw_flat):
     return float(np.average(r2s, weights=weights)) if r2s else float("nan")
 
 
-def pair_distance_curves(providers, raw_flat, n_pairs=200_000):
-    """Cosine distance vs dpT%% for same-PID/charge/region pairs (cliff check)."""
+@torch.no_grad()
+def pair_distance_curves(providers, raw_flat, pool=20_000, chunk=2_000, max_pairs=400_000):
+    """Cosine distance vs dpT%% for same-PID/charge/**region** pairs (cliff check).
+
+    Pairs are mined with the pT gate *off* (same PID, same charge, same
+    region) so the curve spans the dpT axis across the 10%% window edge —
+    that edge is exactly where hard windows should show a cliff.
+    """
     rng = np.random.default_rng(SEED)
-    n = len(raw_flat)
-    a = rng.integers(0, n, n_pairs)
-    b = rng.integers(0, n, n_pairs)
-    raw_np = raw_flat.numpy()
-    same = (
-        (raw_np[a, 3] == raw_np[b, 3])
-        & (raw_np[a, 4] == raw_np[b, 4])
-        & (np.abs(raw_np[a, 1] - raw_np[b, 1]) <= 0.1)
-        & (np.abs(np.remainder(raw_np[a, 2] - raw_np[b, 2] + np.pi, 2 * np.pi) - np.pi) <= 0.1)
-        & (a != b)
-    )
-    a, b = a[same], b[same]
-    dpt = np.abs(raw_np[a, 0] - raw_np[b, 0]) / np.maximum(raw_np[a, 0], raw_np[b, 0]).clip(1e-6)
+    n = min(pool, len(raw_flat))
+    sel = torch.from_numpy(rng.choice(len(raw_flat), n, replace=False))
+    f = raw_flat[sel].to(DEVICE)
+    pid, charge = f[:, 3], f[:, 4].round()
+    pt, eta, phi = f[:, 0], f[:, 1], f[:, 2]
+
+    pairs_a, pairs_b = [], []
+    for start in range(0, n, chunk):
+        end = min(start + chunk, n)
+        crit = (eta[start:end, None] - eta[None, :]).abs() <= 0.1
+        dphi = (phi[start:end, None] - phi[None, :] + np.pi) % (2 * np.pi) - np.pi
+        crit &= dphi.abs() <= 0.1
+        crit &= pid[start:end, None] == pid[None, :]
+        crit &= charge[start:end, None] == charge[None, :]
+        rows = torch.arange(start, end, device=DEVICE)
+        crit[rows - start, rows] = False
+        a, b = crit.nonzero(as_tuple=True)
+        pairs_a.append((a + start).cpu())
+        pairs_b.append(b.cpu())
+        if sum(len(p) for p in pairs_a) > max_pairs:
+            break
+    a = torch.cat(pairs_a)[:max_pairs]
+    b = torch.cat(pairs_b)[:max_pairs]
+
+    pt_c = pt.cpu()
+    dpt = (pt_c[a] - pt_c[b]).abs() / torch.maximum(pt_c[a], pt_c[b]).clamp(min=1e-6)
+    dpt = dpt.numpy()
 
     curves = {}
+    bins = np.linspace(0, 0.5, 26)
     for name in ["library", "library_hard"]:
         if name not in providers:
             continue
-        z = torch.nn.functional.normalize(providers[name], dim=-1).numpy()
-        dist = 1 - (z[a] * z[b]).sum(1)
-        bins = np.linspace(0, 0.5, 21)
+        z = torch.nn.functional.normalize(providers[name][sel], dim=-1)
+        dist = (1 - (z[a] * z[b]).sum(1)).numpy()
         med = [
             np.median(dist[(dpt >= lo) & (dpt < hi)])
             if ((dpt >= lo) & (dpt < hi)).sum() > 50
@@ -157,6 +228,77 @@ def pair_distance_curves(providers, raw_flat, n_pairs=200_000):
         ]
         curves[name] = (0.5 * (bins[1:] + bins[:-1]), np.array(med))
     return curves
+
+
+def fig_retrieval(results):
+    order = [n for n in [
+        "library", "library_cone", "library_hard",
+        "null_handcrafted", "raw_kinematics", "v1_contrastive", "v1_vqvae",
+    ] if n in results]
+    vals = [results[n]["criterion_recall_at_8"] for n in order]
+
+    fig, ax = plt.subplots(figsize=(6.4, 3.2))
+    y = np.arange(len(order))[::-1]
+    ax.barh(y, vals, height=0.55, color="#2a78d6")
+    for yi, v in zip(y, vals):
+        ax.annotate(f"{v:.3f}", (v, yi), xytext=(4, 0), textcoords="offset points",
+                    va="center", fontsize=8.5, color=INK2)
+    ax.set_yticks(y, order, fontsize=8.5)
+    ax.set_xlim(0, 1.0)
+    ax.set_xlabel("criterion recall@8 (available same-PID/charge/pT/region partners found)")
+    ax.set_title("Does the embedding rank criterion partners on top?")
+    ax.grid(axis="y", visible=False)
+    savefig(fig, "library_retrieval.png")
+
+
+def fig_pid_islands(providers, raw_flat):
+    if "library" not in providers:
+        return
+    from sklearn.manifold import TSNE
+
+    # Balanced subsample per species: pi/gamma dominate ~90% of candidates and
+    # would drown the leptons; linear PCA also under-shows the 16-D structure
+    # (purity 0.91 lives in higher components) — t-SNE renders the islands.
+    rng = np.random.default_rng(SEED)
+    pid_all = np.abs(raw_flat[:, 3].numpy())
+    sel = np.concatenate([
+        rng.permutation(np.flatnonzero(pid_all == code))[:2500] for code in PDG_GROUPS
+    ])
+    z = providers["library"][sel].numpy()
+    pid = pid_all[sel]
+    p = TSNE(n_components=2, random_state=SEED, init="pca", perplexity=30).fit_transform(z)
+
+    fig, ax = plt.subplots(figsize=(5.6, 4.6))
+    for color, (code, label) in zip(C_CLASS, PDG_GROUPS.items()):
+        m = pid == code
+        ax.scatter(p[m, 0], p[m, 1], s=2.5, c=color, alpha=0.4, lw=0, label=label)
+    leg = ax.legend(markerscale=5, fontsize=8.5, loc="best")
+    for h in leg.legend_handles:
+        h.set_alpha(1)
+    ax.set_xticks([])
+    ax.set_yticks([])
+    ax.grid(False)
+    ax.set_title("Library tokens (AOJ, real CMS) — t-SNE colored by particle species",
+                 fontsize=10)
+    savefig(fig, "library_pid_islands.png")
+
+
+def fig_cliff(curves):
+    if not curves:
+        return
+    fig, ax = plt.subplots(figsize=(5.8, 3.4))
+    styles = {"library": ("graded kernel", "#2a78d6"), "library_hard": ("hard windows", "#1baf7a")}
+    for name, (x, y) in curves.items():
+        label, color = styles.get(name, (name, INK))
+        ax.plot(x, y, color=color, label=label)
+    ax.axvline(0.1, color=BASE, lw=1, ls=":")
+    ax.annotate("dpT window", (0.1, 0.02), xycoords=("data", "axes fraction"),
+                fontsize=7.5, color=MUTED)
+    ax.set_xlabel(r"pair $\Delta p_T$ (relative) — same PID/charge/region pairs")
+    ax.set_ylabel("embedding cosine distance (median)")
+    ax.set_title("Window-edge geometry: graded kernel vs hard windows")
+    ax.legend()
+    savefig(fig, "library_cliff_check.png")
 
 
 def main() -> None:
@@ -177,6 +319,7 @@ def main() -> None:
         purity = compute_knn_pid_purity(z[sub], pid_flat[sub], k=8)
         rank = compute_embedding_collapse(z[sub])["effective_rank"]
         results[name] = {
+            "criterion_recall_at_8": criterion_recall_at_k(z, raw_flat),
             "retrieval_precision_at_8": float(res["precision_at_k"]),
             "criterion_density": float(res["criterion_density"]),
             "knn_pid_purity": float(purity),
@@ -190,12 +333,10 @@ def main() -> None:
 
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
     (FIGURES_DIR / "library_metrics.json").write_text(json.dumps(results, indent=2))
-    np.savez(
-        FIGURES_DIR / "library_curves.npz",
-        **{f"{k}_x": v[0] for k, v in curves.items()},
-        **{f"{k}_y": v[1] for k, v in curves.items()},
-    )
-    print(f"[done] metrics + curves written to {FIGURES_DIR}")
+    fig_retrieval(results)
+    fig_pid_islands(providers, raw_flat)
+    fig_cliff(curves)
+    print(f"[done] metrics + figures written to {FIGURES_DIR}")
 
 
 if __name__ == "__main__":
