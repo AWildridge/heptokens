@@ -62,6 +62,9 @@ class LitContrastiveTokenizer(ScheduledOptimiserMixin, LightningModule):
         view_keys: Tuple[str, str] = ("csts_view0", "csts_view1"),
         input_key: str = "csts",
         mask_key: str = "mask",
+        loss_inputs: str = "two_view",
+        raw_key: str = "csts_raw",
+        use_projector: bool = True,
         data_sample: torch.Tensor = None,
         input_dim: int | None = None,
         **kwargs,
@@ -79,6 +82,11 @@ class LitContrastiveTokenizer(ScheduledOptimiserMixin, LightningModule):
         self.input_key = input_key
         self.mask_key = mask_key
         self.augmentation = augmentation
+        if loss_inputs not in ("two_view", "features"):
+            raise ValueError(f"Unknown loss_inputs mode: {loss_inputs!r}")
+        self.loss_inputs = loss_inputs
+        self.raw_key = raw_key
+        self.use_projector = use_projector
 
         if data_sample is not None:
             input_dim = data_sample.shape[-1]
@@ -138,7 +146,43 @@ class LitContrastiveTokenizer(ScheduledOptimiserMixin, LightningModule):
             "`augmentation=` to the model."
         )
 
+    def _features_step(
+        self, batch: Dict[str, torch.Tensor], prefix: str
+    ) -> Optional[torch.Tensor]:
+        """Single-view, feature-conditioned objective (particle-library mode).
+
+        No augmented views: the loss receives the embeddings plus the matching
+        *physical-unit* features (``raw_key``, stashed by ``keep_raw_batch``
+        before preprocessing; falls back to the model input) and builds its
+        pair structure from physics — e.g. ``physics_kernel_loss``.
+        """
+        z = self.encoder(batch)
+        mask = batch.get(self.mask_key)
+        feats = batch.get(self.raw_key, batch[self.input_key])
+
+        if mask is not None:
+            z_flat, f_flat = z[mask], feats[mask]
+        else:
+            z_flat = z.reshape(-1, z.shape[-1])
+            f_flat = feats.reshape(-1, feats.shape[-1])
+
+        if z_flat.shape[0] < 3:
+            log.warning("Batch with <3 valid constituents; skipping step.")
+            return None
+
+        if self.use_projector:
+            z_flat = self.projector(z_flat)
+
+        loss, components = self.loss_fn(z_flat, f_flat)
+        self.log(f"{prefix}/total_loss", loss, prog_bar=True)
+        for name, value in components.items():
+            self.log(f"{prefix}/{name}", value)
+        return loss
+
     def _shared_step(self, batch: Dict[str, torch.Tensor], prefix: str) -> Optional[torch.Tensor]:
+        if self.loss_inputs == "features":
+            return self._features_step(batch, prefix)
+
         view0, view1, mask = self._get_views(batch)
         z0 = self._encode_view(view0, mask)
         z1 = self._encode_view(view1, mask)

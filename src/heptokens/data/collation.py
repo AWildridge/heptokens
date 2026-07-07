@@ -109,6 +109,17 @@ class ContinuousTokenizer:
         return jet_dict
 
 
+def keep_raw_batch(jet_dict: dict, input_key: str = "csts", raw_key: str = "csts_raw") -> dict:
+    """Stash a pristine copy of the constituent tensor before preprocessing.
+
+    Order this transform *before* ``preprocess_batch`` in the transforms dict.
+    Losses that need physical-unit features (e.g. the physics-kernel pair
+    criterion) read ``raw_key`` while the encoder consumes the scaled tensor.
+    """
+    jet_dict[raw_key] = jet_dict[input_key].clone()
+    return jet_dict
+
+
 def preprocess_batch(
     jet_dict: dict[T.Tensor],
     cst_fn: BaseEstimator,

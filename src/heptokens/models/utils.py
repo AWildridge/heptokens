@@ -259,6 +259,78 @@ def compute_knn_pid_purity(
     return same.float().mean()
 
 
+def compute_retrieval_precision(
+    z: T.Tensor,
+    feats: T.Tensor,
+    pt_index: int = 0,
+    eta_index: int = 1,
+    phi_index: int = 2,
+    pid_index: int | None = None,
+    charge_index: int | None = None,
+    dpt_frac: float = 0.1,
+    deta_max: float | None = 0.1,
+    dphi_max: float | None = 0.1,
+    dr_max: float | None = None,
+    k: int = 8,
+    max_points: int = 2048,
+    eps: float = 1e-6,
+) -> dict:
+    """Library quality: do nearest neighbours satisfy the particle criterion?
+
+    For each anchor, the fraction of its k nearest embedding neighbours that
+    satisfy the *hard* particle-library criterion (same PID, same charge,
+    relative ΔpT ≤ ``dpt_frac``, same detector region). Reported alongside the
+    criterion's density among all pairs — the random-retrieval baseline.
+
+    Args:
+        z: Flattened valid embeddings [n_points, dim].
+        feats: Matching physical-unit features [n_points, n_feats].
+        deta_max/dphi_max: Per-coordinate region windows; set ``dr_max``
+            instead for a cone criterion.
+
+    Returns:
+        dict with ``precision_at_k`` and ``criterion_density``.
+    """
+    if z.shape[0] > max_points:
+        idx = T.randperm(z.shape[0], device=z.device)[:max_points]
+        z, feats = z[idx], feats[idx]
+
+    n = z.shape[0]
+    k = min(k, n - 1)
+    if k < 1:
+        nan = T.tensor(float("nan"), device=z.device)
+        return {"precision_at_k": nan, "criterion_density": nan}
+
+    pt = feats[:, pt_index]
+    dpt = (pt.unsqueeze(0) - pt.unsqueeze(1)).abs()
+    pt_scale = T.maximum(pt.unsqueeze(0), pt.unsqueeze(1)).clamp(min=eps)
+    crit = dpt / pt_scale <= dpt_frac
+
+    deta = feats[:, eta_index].unsqueeze(0) - feats[:, eta_index].unsqueeze(1)
+    dphi = feats[:, phi_index].unsqueeze(0) - feats[:, phi_index].unsqueeze(1)
+    dphi = T.remainder(dphi + T.pi, 2 * T.pi) - T.pi
+    if dr_max is not None:
+        crit = crit & ((deta.pow(2) + dphi.pow(2)).sqrt() <= dr_max)
+    else:
+        crit = crit & (deta.abs() <= deta_max) & (dphi.abs() <= dphi_max)
+
+    if pid_index is not None:
+        pid = feats[:, pid_index]
+        crit = crit & (pid.unsqueeze(0) == pid.unsqueeze(1))
+    if charge_index is not None:
+        charge = feats[:, charge_index].round()
+        crit = crit & (charge.unsqueeze(0) == charge.unsqueeze(1))
+    crit.fill_diagonal_(False)
+
+    dists = T.cdist(z.float(), z.float())
+    dists.fill_diagonal_(float("inf"))
+    knn_idx = dists.topk(k, largest=False).indices  # [n, k]
+    hits = T.gather(crit, 1, knn_idx).float().mean()
+
+    density = crit.float().sum() / max(n * (n - 1), 1)
+    return {"precision_at_k": hits, "criterion_density": density}
+
+
 class JetBackbone(nn.Module):
     """Generalised backbone for the jet models.
 

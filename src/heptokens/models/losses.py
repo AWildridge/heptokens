@@ -81,16 +81,143 @@ def info_nce_loss(
     return loss, {"nce_loss": loss}
 
 
+def _wrap_dphi(dphi: T.Tensor) -> T.Tensor:
+    """Wrap azimuthal differences to [-pi, pi)."""
+    return T.remainder(dphi + T.pi, 2 * T.pi) - T.pi
+
+
+def physics_kernel_loss(
+    z: T.Tensor,
+    feats: T.Tensor,
+    pt_index: int = 0,
+    eta_index: int = 1,
+    phi_index: int = 2,
+    pid_index: int | None = None,
+    charge_index: int | None = None,
+    dpt_frac: float = 0.1,
+    deta_max: float = 0.1,
+    dphi_max: float = 0.1,
+    dr_max: float = 0.1,
+    region: str = "coords",
+    temperature: float = 0.1,
+    max_points: int = 1024,
+    var_weight: float = 0.0,
+    cov_weight: float = 0.0,
+    eps: float = 1e-6,
+) -> tuple[T.Tensor, dict]:
+    """Graded physics-kernel contrastive loss — the particle-library objective.
+
+    The target geometry is stated in physics variables: two constituents are
+    similar to the degree that they have the **same PID**, the **same charge**,
+    similar pT (relative), and head to the same detector region. Hard gates on
+    the categorical properties, a smooth Gaussian kernel on the kinematics —
+    no cliff at an arbitrary window edge, no augmentations needed, and
+    positives are found across *all* jets in the batch (the particle library).
+
+        s_ij = [pid_i == pid_j] * [q_i == q_j]
+               * exp(-1/2 (dpt%_ij / dpt_frac)^2) * exp(-1/2 region_ij^2)
+
+    with ``region^2 = (deta/deta_max)^2 + (dphi/dphi_max)^2`` for
+    ``region="coords"`` or ``(dR/dr_max)^2`` for ``region="cone"``.
+
+    The loss is soft-target contrastive cross-entropy: each kernel row (self
+    excluded, normalised) is the target distribution for the softmax over
+    embedding similarities — non-positives are repelled through the softmax
+    denominator ("the rest should be away"). Anchors with no kernel mass in
+    the sampled set are dropped; their complement is logged as
+    ``positive_frac``.
+
+    Args:
+        z: Embeddings ``[M, D]`` of valid constituents (normalised internally).
+        feats: Matching *physical-unit* features ``[M, F]`` — carry them past
+            preprocessing with the ``keep_raw_batch`` transform.
+        pid_index / charge_index: Columns of ``feats`` holding PDG id and
+            charge; ``None`` disables that gate (e.g. datasets without PID).
+        region: ``"coords"`` (per-coordinate windows) or ``"cone"`` (dR).
+        var_weight / cov_weight: Optional VICReg variance/covariance terms on
+            ``z`` as extra anti-collapse insurance (defaults off — the softmax
+            denominator already prevents collapse).
+    """
+    m = z.shape[0]
+    if m > max_points:
+        idx = T.randperm(m, device=z.device)[:max_points]
+        z, feats = z[idx], feats[idx]
+
+    n = z.shape[0]
+    if n < 3:
+        zero = z.sum() * 0.0
+        return zero, {"kernel_loss": zero, "positive_frac": zero}
+
+    pt = feats[:, pt_index]
+    dpt = (pt.unsqueeze(0) - pt.unsqueeze(1)).abs()
+    pt_scale = T.maximum(pt.unsqueeze(0), pt.unsqueeze(1)).clamp(min=eps)
+    log_k = -0.5 * (dpt / pt_scale / dpt_frac).pow(2)
+
+    deta = feats[:, eta_index].unsqueeze(0) - feats[:, eta_index].unsqueeze(1)
+    dphi = _wrap_dphi(feats[:, phi_index].unsqueeze(0) - feats[:, phi_index].unsqueeze(1))
+    if region == "coords":
+        log_k = log_k - 0.5 * ((deta / deta_max).pow(2) + (dphi / dphi_max).pow(2))
+    elif region == "cone":
+        log_k = log_k - 0.5 * (deta.pow(2) + dphi.pow(2)) / dr_max**2
+    else:
+        raise ValueError(f"Unknown region mode: {region!r}")
+
+    kernel = T.exp(log_k)
+    if pid_index is not None:
+        pid = feats[:, pid_index]
+        kernel = kernel * (pid.unsqueeze(0) == pid.unsqueeze(1))
+    if charge_index is not None:
+        charge = feats[:, charge_index].round()
+        kernel = kernel * (charge.unsqueeze(0) == charge.unsqueeze(1))
+
+    self_mask = T.eye(n, dtype=T.bool, device=z.device)
+    kernel = kernel.masked_fill(self_mask, 0.0)
+
+    mass = kernel.sum(dim=1)
+    valid = mass > 1e-6
+    if not valid.any():
+        zero = z.sum() * 0.0
+        return zero, {"kernel_loss": zero, "positive_frac": zero}
+
+    z_n = F.normalize(z, dim=-1)
+    logits = (z_n @ z_n.T / temperature).masked_fill(self_mask, float("-inf"))
+    log_prob = F.log_softmax(logits, dim=1)
+
+    q = kernel[valid] / mass[valid].unsqueeze(1)
+    # where() (not multiply): log_prob holds -inf at self-positions and 0 * -inf = nan.
+    cross_entropy = -T.where(q > 0, q * log_prob[valid], T.zeros_like(q)).sum(dim=1)
+    loss = cross_entropy.mean()
+
+    components = {
+        "kernel_loss": loss,
+        "positive_frac": valid.float().mean(),
+        "kernel_mass_mean": mass[valid].mean(),
+    }
+
+    if var_weight > 0 or cov_weight > 0:
+        reg, reg_comps = vicreg_loss(
+            z, z, sim_weight=0.0, var_weight=var_weight, cov_weight=cov_weight
+        )
+        loss = loss + reg
+        components["var_loss"] = reg_comps["var_loss"]
+        components["cov_loss"] = reg_comps["cov_loss"]
+
+    return loss, components
+
+
 def supcon_physics_loss(
     za: T.Tensor,
     feats: T.Tensor,
     zb: T.Tensor | None = None,
     pid_index: int | None = None,
+    charge_index: int | None = None,
     pt_index: int = 0,
     eta_index: int = 1,
     phi_index: int = 2,
     dpt_frac: float = 0.25,
     dr_max: float = 0.2,
+    deta_max: float | None = None,
+    dphi_max: float | None = None,
     temperature: float = 0.1,
     max_points: int = 1024,
     eps: float = 1e-6,
@@ -145,13 +272,20 @@ def supcon_physics_loss(
     same_pt = dpt / pt_scale <= dpt_frac
 
     deta = eta.unsqueeze(0) - eta.unsqueeze(1)
-    dphi = T.remainder(phi.unsqueeze(0) - phi.unsqueeze(1) + T.pi, 2 * T.pi) - T.pi
-    same_dir = (deta.pow(2) + dphi.pow(2)).sqrt() <= dr_max
+    dphi = _wrap_dphi(phi.unsqueeze(0) - phi.unsqueeze(1))
+    if deta_max is not None and dphi_max is not None:
+        # Per-coordinate detector-region windows.
+        same_dir = (deta.abs() <= deta_max) & (dphi.abs() <= dphi_max)
+    else:
+        same_dir = (deta.pow(2) + dphi.pow(2)).sqrt() <= dr_max
 
     positives = same_pt & same_dir
     if pid_index is not None:
         pid = feats[:, pid_index]
         positives = positives & (pid.unsqueeze(0) == pid.unsqueeze(1))
+    if charge_index is not None:
+        charge = feats[:, charge_index].round()
+        positives = positives & (charge.unsqueeze(0) == charge.unsqueeze(1))
 
     if zb is not None:
         # A constituent's own second view is always a positive.

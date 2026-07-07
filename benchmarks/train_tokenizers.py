@@ -1,4 +1,11 @@
-"""Train the continuous contrastive tokenizer and the VQ-VAE baseline.
+"""Train the tokenizer arms: particle library, contrastive-VICReg, VQ-VAE.
+
+The `library` arm is the particle-library tokenizer (user specification):
+a context-free per-particle MLP trained with the graded physics-kernel
+objective — particles with same PID, same charge, dpT <= 10% and
+|deta|, |dphi| <= 0.1 cluster; the rest are repelled. On jets5c (no PID/charge
+columns, jet-relative coordinates) the kernel runs kinematics-only — the
+mechanics check; the physics run is `--data aoj`.
 
 Matched budgets: identical transformer encoders (d_model 128, 4 layers) and the
 same per-constituent capacity — contrastive latent_dim 16 vs VQ codebook_dim 16
@@ -18,13 +25,22 @@ import torch
 from lightning.pytorch.callbacks import LearningRateMonitor, ModelCheckpoint
 from lightning.pytorch.loggers import CSVLogger
 
-from common import LATENT_DIM, SEED, TOKENIZER_DIR, make_datamodule, transformer_partial
+from common import (
+    LATENT_DIM,
+    LIBRARY_CRITERION,
+    SEED,
+    TOKENIZER_DIR,
+    make_datamodule,
+    transformer_partial,
+)
 
 from heptokens.callbacks.contrastive import ContrastiveMonitor
 from heptokens.callbacks.recon import BaseReconstructionMonitor
 from heptokens.data.augmentations import ConstituentAugmentation
 from heptokens.models.coders import Decoder, Encoder
 from heptokens.models.contrastive import LitContrastiveTokenizer
+from heptokens.models.losses import physics_kernel_loss
+from heptokens.models.particle_encoder import ParticleEncoder
 from heptokens.models.utils import warmup_cosine_scheduler
 from heptokens.models.vq_vae import LitVqVae
 
@@ -52,6 +68,51 @@ def build_contrastive(data_sample):
     )
 
 
+def build_library(data_sample, data, region="coords", hard_windows=False):
+    """Particle-library tokenizer (context-free MLP + graded physics kernel)."""
+    has_pid = data == "aoj"  # jets5c carries only (pt, deta, dphi)
+    encoder = partial(
+        ParticleEncoder,
+        continuous_indices=(0, 1, 2),
+        pid_index=3 if has_pid else None,
+        charge_index=4 if has_pid else None,
+        pid_emb_dim=8,
+        charge_emb_dim=2,
+        hidden_dims=(128, 128, 64),
+    )
+    if hard_windows:
+        from heptokens.models.losses import supcon_physics_loss
+
+        loss_fn = partial(
+            supcon_physics_loss,
+            pid_index=3 if has_pid else None,
+            charge_index=4 if has_pid else None,
+            pt_index=0, eta_index=1, phi_index=2,
+            dpt_frac=0.1, deta_max=0.1, dphi_max=0.1,
+            max_points=4096,
+        )
+    else:
+        loss_fn = partial(
+            physics_kernel_loss,
+            pid_index=3 if has_pid else None,
+            charge_index=4 if has_pid else None,
+            region=region,
+            dr_max=0.1,
+            max_points=4096,
+            **LIBRARY_CRITERION,
+        )
+    return LitContrastiveTokenizer(
+        encoder=encoder,
+        loss_fn=loss_fn,
+        loss_inputs="features",
+        use_projector=False,
+        latent_dim=LATENT_DIM,
+        learning_rate=1e-3,
+        scheduler=partial(warmup_cosine_scheduler, warmup_epochs=3),
+        data_sample=data_sample,
+    )
+
+
 def build_vqvae(data_sample):
     return LitVqVae(
         encoder=partial(Encoder, model=transformer_partial()),
@@ -67,7 +128,11 @@ def build_vqvae(data_sample):
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", choices=["contrastive", "vqvae"], required=True)
+    parser.add_argument("--model", choices=["library", "contrastive", "vqvae"], required=True)
+    parser.add_argument("--data", choices=["jets5c", "aoj"], default="jets5c")
+    parser.add_argument("--region", choices=["coords", "cone"], default="coords")
+    parser.add_argument("--hard-windows", action="store_true")
+    parser.add_argument("--run-name", default=None, help="override output dir name")
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--workers", type=int, default=8)
@@ -76,15 +141,25 @@ def main() -> None:
     L.seed_everything(SEED, workers=True)
     torch.set_float32_matmul_precision("medium")
 
-    run_dir = TOKENIZER_DIR / args.model
+    run_name = args.run_name or (
+        args.model if args.data == "jets5c" else f"{args.model}_{args.data}"
+    )
+    run_dir = TOKENIZER_DIR / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    dm = make_datamodule(batch_size=args.batch_size, num_workers=args.workers)
+    dm = make_datamodule(batch_size=args.batch_size, num_workers=args.workers, data=args.data)
     dm.setup()
     data_sample = dm.get_data_sample()
     print(f"data sample: {tuple(data_sample.shape)}")
 
-    if args.model == "contrastive":
+    if args.model == "library":
+        model = build_library(
+            data_sample, args.data, region=args.region, hard_windows=args.hard_windows
+        )
+        monitor_cb = ContrastiveMonitor(
+            max_batches=4, pid_index=3 if args.data == "aoj" else None
+        )
+    elif args.model == "contrastive":
         model = build_contrastive(data_sample)
         monitor_cb = ContrastiveMonitor(max_batches=4)
     else:

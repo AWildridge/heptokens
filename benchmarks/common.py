@@ -30,6 +30,27 @@ STRUCT_H5 = DATA_DIR / "jets5c.h5"
 CST_SCALER = DATA_DIR / "cst_scaler.joblib"
 JET_SCALER = DATA_DIR / "jet_scaler.joblib"
 
+# Aspen Open Jets (real CMS 2016 RunG data; no truth labels).
+AOJ_RAW_H5 = DATA_DIR / "aoj" / "RunG_batch0.h5"
+AOJ_STRUCT_H5 = DATA_DIR / "aoj_structured.h5"
+AOJ_CST_SCALER = DATA_DIR / "aoj_cst_scaler.joblib"
+AOJ_JET_SCALER = DATA_DIR / "aoj_jet_scaler.joblib"
+
+# Particle-library criterion (user spec): same PID, same charge, dpT <= 10%,
+# |deta| and |dphi| <= 0.1. Feature columns for AOJ: [pt, eta, phi, pid, charge].
+LIBRARY_CRITERION = dict(
+    pt_index=0, eta_index=1, phi_index=2,
+    dpt_frac=0.1, deta_max=0.1, dphi_max=0.1,
+)
+AOJ_DATASET_KW = dict(
+    obj_group="jets",
+    set_group="csts",
+    obj_features=["pt", "nconst"],
+    set_features=["pt", "eta", "phi", "pid", "charge"],
+    label_key="label",
+    mask_key="valid",
+)
+
 N_CLASSES = 5
 N_FEATURES = 3  # (pt, deta, dphi)
 NUM_ELEMENTS = 150
@@ -47,16 +68,22 @@ DATASET_KW = dict(
 )
 
 
-def make_transforms() -> dict:
-    """Preprocessing transform dict for direct (non-Hydra) module construction."""
-    from heptokens.data.collation import preprocess_batch
+def make_transforms(data: str = "jets5c") -> dict:
+    """Preprocessing transform dict for direct (non-Hydra) module construction.
 
+    ``keep_raw`` runs first so physics-conditioned losses see physical units;
+    other consumers simply ignore the extra ``csts_raw`` key.
+    """
+    from heptokens.data.collation import keep_raw_batch, preprocess_batch
+
+    cst, jet = (CST_SCALER, JET_SCALER) if data == "jets5c" else (AOJ_CST_SCALER, AOJ_JET_SCALER)
     return {
+        "keep_raw": keep_raw_batch,
         "preprocess": partial(
             preprocess_batch,
-            cst_fn=joblib.load(CST_SCALER),
-            jet_fn=joblib.load(JET_SCALER),
-        )
+            cst_fn=joblib.load(cst),
+            jet_fn=joblib.load(jet),
+        ),
     }
 
 
@@ -93,14 +120,18 @@ def datamodule_cfg(train_frac, val_frac, test_frac, batch_size, num_workers=8) -
     }
 
 
-def make_datamodule(batch_size=1024, num_workers=8, num_samples=None, transforms="preprocess"):
+def make_datamodule(
+    batch_size=1024, num_workers=8, num_samples=None, transforms="preprocess", data="jets5c"
+):
     """Structured datamodule for direct construction (training scripts)."""
     from heptokens.data.structured_array import (
         StructuredArrayHDF5Dataset,
         StructuredArrayModule,
     )
 
-    kw = dict(DATASET_KW)
+    kw = dict(DATASET_KW if data == "jets5c" else AOJ_DATASET_KW)
+    if data != "jets5c":
+        kw["file_path"] = str(AOJ_STRUCT_H5)
     if num_samples is not None:
         kw["num_samples"] = num_samples
     return StructuredArrayModule(
@@ -112,7 +143,7 @@ def make_datamodule(batch_size=1024, num_workers=8, num_samples=None, transforms
         batch_size=batch_size,
         num_workers=num_workers,
         pin_memory=True,
-        transforms=make_transforms() if transforms == "preprocess" else transforms,
+        transforms=make_transforms(data) if transforms == "preprocess" else transforms,
     )
 
 
