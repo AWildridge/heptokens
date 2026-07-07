@@ -43,10 +43,15 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
         optimizer=None,
         scheduler=None,
         data_sample: torch.Tensor = None,
+        input_dim: int | None = None,
         **kwargs,
     ):
         super().__init__()
-        self.save_hyperparameters()
+        # data_sample is a tensor: keep it out of hparams (checkpoint bloat and
+        # pathologically slow YAML hparams serialization by loggers). The
+        # scalar input_dim is persisted instead so load_from_checkpoint
+        # rebuilds the coders without a data sample.
+        self.save_hyperparameters(ignore=["data_sample"])
 
         self.learning_rate = learning_rate
         self.reconstruction_weight = reconstruction_weight
@@ -55,8 +60,9 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
         # Infer input dimension from data_sample if provided
         if data_sample is not None:
             input_dim = data_sample.shape[-1]
-        else:
+        elif input_dim is None:
             input_dim = 3  # Default for now
+        self.hparams["input_dim"] = input_dim
 
         # Declare encoder
         self.encoder = encoder(input_dim=input_dim, output_dim=codebook_dim)

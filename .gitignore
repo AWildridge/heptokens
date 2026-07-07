@@ -33,3 +33,5 @@ share/python-wheels/
 # Plots and other results
 plot/
 results/
+# HTCondor/LPC profile hook artifacts
+.env/

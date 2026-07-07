@@ -63,10 +63,15 @@ class LitContrastiveTokenizer(ScheduledOptimiserMixin, LightningModule):
         input_key: str = "csts",
         mask_key: str = "mask",
         data_sample: torch.Tensor = None,
+        input_dim: int | None = None,
         **kwargs,
     ):
         super().__init__()
-        self.save_hyperparameters()
+        # data_sample is a tensor: keep it out of hparams (checkpoint bloat and
+        # pathologically slow YAML hparams serialization by loggers). The
+        # scalar input_dim is persisted instead so load_from_checkpoint
+        # rebuilds the encoder without a data sample.
+        self.save_hyperparameters(ignore=["data_sample"])
 
         self.learning_rate = learning_rate
         self.latent_dim = latent_dim
@@ -77,8 +82,9 @@ class LitContrastiveTokenizer(ScheduledOptimiserMixin, LightningModule):
 
         if data_sample is not None:
             input_dim = data_sample.shape[-1]
-        else:
+        elif input_dim is None:
             input_dim = 3
+        self.hparams["input_dim"] = input_dim
 
         if encoder is None:
             encoder = Encoder
