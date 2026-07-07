@@ -1,6 +1,12 @@
 # Continuous Tokenization for HEP Constituents: A Survey and Design Study
 
-> **Status:** design document, revision 2 (post red-team audit).
+> **Status:** survey & audit document, revision 3.
+> **Method of record:** the tokenizer-stage objective is now the
+> **particle-library tokenizer** (graded physics-kernel, context-free MLP Φ) —
+> specified, implemented, and validated on real CMS data; see
+> [`particle_library_tokenizer.md`](particle_library_tokenizer.md). This
+> document remains the record of the survey, the red-team audit, and the
+> backbone-level (FM) benchmark protocol.
 > **Mission:** produce **AI-ready token datasets** — experiments (CMS/ATLAS) publish
 > per-constituent embeddings/tokens as the shareable artifact; foundation-model
 > builders train on tokens *without* PF-candidate access or LHC-reconstruction
@@ -244,6 +250,20 @@ only be settled by our own benchmark (Section 8).
 - **Collapse prevention** — VICReg or physics-SupCon (vanilla InfoNCE demoted; see
   Section 5 caveat).
 
+**Outcome (July 2026).** Both variants of #1 were built and benchmarked:
+
+- The *resolution-invariant* (smearing-VICReg, transformer) variant trains
+  collapse-free but its augmentation list silently defines the metric — smearing
+  pT cost ~1.5 AUC downstream — and jet-context leakage through attention makes
+  per-particle tokens non-universal (criterion recall 0.05).
+- The *soft physics-kernel* variant — hard same-PID + same-charge gates, graded
+  Gaussian kernel in (ΔpT% ≤ 10%, |Δη| ≤ 0.1, |Δφ| ≤ 0.1), context-free MLP —
+  achieves the library criterion on real CMS data (criterion recall@8 = 0.9992,
+  20× fewer retrieval misses than an untrained PID-one-hot ⊕ kinematics null)
+  and **is the method of record**: see
+  [`particle_library_tokenizer.md`](particle_library_tokenizer.md) and
+  `benchmarks/README.md`.
+
 ---
 
 ## 8. Benchmark protocol (consumer-view)
@@ -310,9 +330,17 @@ JetClass for labeled transfer.
 - **Export:** continuous analog of `export_tokens.py` — float latents, no codebook
   table; version stamp (latent dim, preprocessing hash, checkpoint id).
 
-**First build:** the contrastive tokenizer arm (VICReg default; physics-SupCon
-option), benchmarked against the existing heptokens VQ-VAE and classifier probes;
-masked-continuous and JEPA arms follow on the same harness.
+**Status of the build-out (July 2026).** Campaign 1 (620k-jet 5-class set)
+benchmarked smearing-VICReg vs VQ vs the raw-feature null through consumer-view
+probes; campaign 2 (AOJ, 1.96M real CMS jets) built and validated the
+particle-library tokenizer, which supersedes the VICReg arm at the tokenizer
+level (`particle_library_tokenizer.md`). Implemented beyond the list above:
+`ParticleEncoder` (context-free MLP with PID/charge embeddings),
+`physics_kernel_loss` / extended `supcon_physics_loss`,
+`PassthroughColumnsTransformer` + `keep_raw_batch`, criterion-recall retrieval
+metrics, and `export_latents.py` with versioned interface metadata.
+Masked-continuous and JEPA remain open as **backbone** arms on the same
+harness.
 
 ---
 
