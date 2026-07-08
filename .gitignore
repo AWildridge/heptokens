@@ -35,3 +35,6 @@ plot/
 results/
 # HTCondor/LPC profile hook artifacts
 .env/
+
+# Jupyter
+.ipynb_checkpoints/
