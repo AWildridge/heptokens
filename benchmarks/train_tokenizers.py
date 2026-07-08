@@ -40,7 +40,7 @@ from heptokens.data.augmentations import ConstituentAugmentation
 from heptokens.models.coders import Decoder, Encoder
 from heptokens.models.contrastive import LitContrastiveTokenizer
 from heptokens.models.losses import physics_kernel_loss
-from heptokens.models.particle_encoder import ParticleEncoder
+from heptokens.models.particle_encoder import ParticleDecoder, ParticleEncoder
 from heptokens.models.utils import warmup_cosine_scheduler
 from heptokens.models.vq_vae import LitVqVae
 
@@ -126,24 +126,63 @@ def build_vqvae(data_sample):
     )
 
 
+def build_vqvae_particle(data_sample):
+    """Apples-to-apples VQ baseline: the library's exact ParticleEncoder, a
+    residual-VQ bottleneck (3 x 512 = 27 bits/particle), and a full-particle
+    reconstruction target (L1 kinematics + CE PID + CE charge) so identity
+    information must pass through the bottleneck. Only the objective differs
+    from the library arm."""
+    return LitVqVae(
+        encoder=partial(
+            ParticleEncoder,
+            continuous_indices=(0, 1, 2),
+            pid_index=3,
+            charge_index=4,
+            pid_emb_dim=8,
+            charge_emb_dim=2,
+            hidden_dims=(128, 128, 64),
+        ),
+        decoder=partial(
+            ParticleDecoder,
+            continuous_indices=(0, 1, 2),
+            pid_index=3,
+            charge_index=4,
+            hidden_dims=(128, 128, 64),
+        ),
+        codebook_size=512,
+        codebook_dim=LATENT_DIM,
+        num_quantizers=3,
+        learning_rate=1e-3,
+        scheduler=partial(warmup_cosine_scheduler, warmup_epochs=3),
+        data_sample=data_sample,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--model", choices=["library", "contrastive", "vqvae"], required=True)
+    parser.add_argument(
+        "--model",
+        choices=["library", "contrastive", "vqvae", "vqvae_particle"],
+        required=True,
+    )
     parser.add_argument("--data", choices=["jets5c", "aoj"], default="jets5c")
     parser.add_argument("--region", choices=["coords", "cone"], default="coords")
     parser.add_argument("--hard-windows", action="store_true")
     parser.add_argument("--run-name", default=None, help="override output dir name")
+    parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--epochs", type=int, default=20)
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args()
 
-    L.seed_everything(SEED, workers=True)
+    L.seed_everything(args.seed, workers=True)
     torch.set_float32_matmul_precision("medium")
 
     run_name = args.run_name or (
         args.model if args.data == "jets5c" else f"{args.model}_{args.data}"
     )
+    if args.seed != SEED:
+        run_name = f"{run_name}_s{args.seed}"
     run_dir = TOKENIZER_DIR / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -162,6 +201,9 @@ def main() -> None:
     elif args.model == "contrastive":
         model = build_contrastive(data_sample)
         monitor_cb = ContrastiveMonitor(max_batches=4)
+    elif args.model == "vqvae_particle":
+        model = build_vqvae_particle(data_sample)
+        monitor_cb = BaseReconstructionMonitor(max_batches=4)
     else:
         model = build_vqvae(data_sample)
         monitor_cb = BaseReconstructionMonitor(max_batches=4)

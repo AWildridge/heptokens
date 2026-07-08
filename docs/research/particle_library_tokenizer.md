@@ -138,9 +138,34 @@ coordinates) validates the machinery on the 620k-jet 5-class set first.
 
 Full tables, figures, and reproduction commands: `benchmarks/README.md`.
 
+## 7b. Fair benchmark vs VQ-VAE (matched everything, objective isolated)
+
+Same data, split, 5 inputs, the same `ParticleEncoder`, same schedule, 3 seeds;
+the VQ arm differs only in its objective — an RVQ bottleneck (3×512 = 27
+bits/particle) with a `ParticleDecoder` reconstructing the full particle
+(L1 kinematics + CE PID + CE charge). Outcome (details in
+`benchmarks/README.md` §Campaign 2b):
+
+- **Complementarity, not dominance.** Library owns the criterion (recall@8
+  0.9991 ± 0.0002 vs 0.9271 ± 0.0062 — ~80× fewer retrieval misses); matched
+  VQ owns information sufficiency (PID/charge linearly decodable at ~100%,
+  within-PID pT R² 0.97 vs 0.17).
+- Library species structure is **metric, not linear** (kNN purity 0.91;
+  linear PID probe ≈ majority baseline) — visible as non-convex t-SNE islands.
+- **No downstream cost:** library tokens probe at the raw-features ceiling on
+  jets5c (0.744 acc / 0.931 AUC), closing v1's gap.
+- **Rate regime:** at 27 bits, trained VQ (0.927) beats post-hoc RVQ-compressed
+  library tokens (0.832) — post-hoc compression is fine at mild rates, but
+  trained quantization defends the geometry under aggressive (~10×) rates.
+  This refines §1d of the survey doc.
+- VQ quantizer-0 partial collapse reproduces across all seeds (15–19% util).
+
 ## 8. Roadmap
 
-1. **Iteration 2:** kinematic-preservation term; re-run the AOJ campaign.
+1. **Iteration 3 (quantified target):** hybrid objective — physics kernel +
+   reconstruction/kinematic-preservation term — aiming for criterion recall
+   ≥ 0.999 **and** within-PID pT R² ≥ 0.9 simultaneously (both poles now
+   measured).
 2. **Release contract:** version tokens (dim, preprocessing hash, checkpoint
    id) via `export_latents.py`; post-hoc compression (fp16 / PQ).
 3. **Cross-experiment:** mixed CMS + second-detector batches under the same

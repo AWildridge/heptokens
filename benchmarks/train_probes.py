@@ -47,7 +47,11 @@ from heptokens.models.token_classifier import FeatureClassifier, VectorClassifie
 def run_exports() -> dict:
     """Export both token releases over the full dataset (idempotent)."""
     paths = {}
-    for name, export_fn in [("contrastive", export_latents), ("vqvae", export_tokens)]:
+    for name, export_fn in [
+        ("contrastive", export_latents),
+        ("library", export_latents),
+        ("vqvae", export_tokens),
+    ]:
         out_dir = TOKENS_DIR / name
         out_path = out_dir / f"{STRUCT_H5.stem}.npz"
         paths[name] = out_path
@@ -57,6 +61,10 @@ def run_exports() -> dict:
         ckpt = TOKENIZER_DIR / name / "checkpoints" / "best.ckpt"
         if not ckpt.exists():
             ckpt = TOKENIZER_DIR / name / "checkpoints" / "last.ckpt"
+        if not ckpt.exists():
+            print(f"[export] no checkpoint for {name}, skipping")
+            paths.pop(name)
+            continue
         cfg = OmegaConf.create(
             {
                 "ckpt_path": str(ckpt),
@@ -192,7 +200,7 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument(
         "--arms", nargs="+", default=["null", "contrastive", "vqvae"],
-        choices=["null", "contrastive", "vqvae"],
+        choices=["null", "contrastive", "library", "vqvae"],
     )
     args = parser.parse_args()
 
@@ -219,6 +227,14 @@ def main() -> None:
         )
         probe = VectorClassifier(codebook_dim=LATENT_DIM, **PROBE_KW)
         summary["contrastive_tokens"] = train_probe("contrastive_tokens", probe, tr, va, args.epochs)
+
+    if "library" in args.arms and "library" in token_paths:
+        tr, va = probe_loaders(
+            LatentTokenDataset, token_paths["library"], args.n_jets,
+            args.batch_size, args.workers,
+        )
+        probe = VectorClassifier(codebook_dim=LATENT_DIM, **PROBE_KW)
+        summary["library_tokens"] = train_probe("library_tokens", probe, tr, va, args.epochs)
 
     if "vqvae" in args.arms:
         tr, va = probe_loaders(

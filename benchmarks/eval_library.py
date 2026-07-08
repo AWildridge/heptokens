@@ -75,19 +75,79 @@ def load_tokenizer(name, cls=LitContrastiveTokenizer):
     return cls.load_from_checkpoint(ckpt, map_location=DEVICE, weights_only=False).eval()
 
 
+def seed_runs(base: str):
+    """Run dirs for a base arm and its seed variants: base, base_s43, ..."""
+    runs = []
+    for d in sorted(TOKENIZER_DIR.glob(f"{base}*")):
+        suffix = d.name[len(base):]
+        if suffix == "" or suffix.startswith("_s"):
+            runs.append((base.replace("_aoj", "") + suffix, d.name))
+    return runs
+
+
+def residual_kmeans_quantize(z, n_stages=3, k=512, fit_n=200_000, seed=SEED):
+    """Post-hoc residual k-means: the rate-matched library row.
+
+    3 stages x 512 codes = 27 bits/particle — identical rate to the trained
+    residual-VQ baseline, applied to *frozen* library tokens (tests the
+    "post-hoc compression instead of trained quantization" claim).
+    """
+    from sklearn.cluster import MiniBatchKMeans
+
+    rng = np.random.default_rng(seed)
+    z_np = z.numpy().astype(np.float32)
+    fit_idx = rng.choice(len(z_np), min(fit_n, len(z_np)), replace=False)
+
+    residual = z_np.copy()
+    quantized = np.zeros_like(z_np)
+    for stage in range(n_stages):
+        km = MiniBatchKMeans(n_clusters=k, random_state=seed + stage, n_init=3)
+        km.fit(residual[fit_idx])
+        assign = km.predict(residual)
+        quantized += km.cluster_centers_[assign]
+        residual -= km.cluster_centers_[assign]
+    return torch.from_numpy(quantized)
+
+
 @torch.no_grad()
 def embedding_providers(raw, scaled, mask):
-    """Yield (name, flat_embedding [M, D]) on valid constituents."""
-    out = {}
+    """Return (providers, extras): flat embeddings on valid constituents plus
+    side diagnostics (e.g. VQ codebook utilization)."""
+    from heptokens.models.utils import compute_codebook_utilization
+
+    out, extras = {}, {}
 
     def encode_with(model, csts):
         batch = {"csts": csts.to(DEVICE), "mask": mask.to(DEVICE)}
         return model.encode(batch)[0][mask].cpu()
 
-    for name in ["library_aoj", "library_aoj_cone", "library_aoj_hard"]:
+    # Library arm + seed variants, and its ablations.
+    for provider, run in seed_runs("library_aoj"):
+        model = load_tokenizer(run)
+        if model is not None:
+            out[provider] = encode_with(model, scaled)
+    for name in ["library_aoj_cone", "library_aoj_hard"]:
         model = load_tokenizer(name)
         if model is not None:
             out[name.replace("_aoj", "")] = encode_with(model, scaled)
+
+    # Apples-to-apples VQ baseline: same encoder/inputs, RVQ bottleneck,
+    # full-particle reconstruction objective. + seed variants.
+    for provider, run in seed_runs("vqvae_particle_aoj"):
+        model = load_tokenizer(run, cls=LitVqVae)
+        if model is not None:
+            batch = {"csts": scaled.to(DEVICE), "mask": mask.to(DEVICE)}
+            z_q, idx, _ = model.encode(batch)
+            name = provider.replace("vqvae_particle", "vq_particle")
+            out[name] = z_q[mask].cpu()
+            util = compute_codebook_utilization(
+                idx.cpu(), mask.cpu(), codebook_size=model.codebook_size
+            )
+            extras[name] = {f"codebook_util_q{q}": float(v) for q, v in enumerate(util)}
+
+    # Rate-matched library row: post-hoc RVQ at 27 bits/particle.
+    if "library" in out:
+        out["library_rvq27"] = residual_kmeans_quantize(out["library"])
 
     # Untrained hand-crafted null: PID one-hot + charge + scaled kinematics.
     pdg_vals = torch.tensor([22.0, 211.0, -211.0, 130.0, 11.0, -11.0, 13.0, -13.0])
@@ -106,7 +166,7 @@ def embedding_providers(raw, scaled, mask):
         batch = {"csts": scaled[..., :3].to(DEVICE), "mask": mask.to(DEVICE)}
         out["v1_vqvae"] = vq.encode(batch)[0][mask].cpu()
 
-    return out
+    return out, extras
 
 
 @torch.no_grad()
@@ -155,6 +215,45 @@ def criterion_recall_at_k(z, raw_flat, k=8, pool=30_000, chunk=2_000):
         recalls.append((hits[has] / n_partners[has].clamp(max=k).float()).cpu())
 
     return float(torch.cat(recalls).mean()) if recalls else float("nan")
+
+
+def linear_probe_accuracy(z, labels, n_train=15_000, n_test=5_000, seed=SEED):
+    """Accuracy of a multinomial linear probe — information-sufficiency check
+    (neutral: neither method trains on this objective)."""
+    from sklearn.linear_model import LogisticRegression
+
+    rng = np.random.default_rng(seed)
+    idx = rng.permutation(len(z))[: n_train + n_test]
+    tr, te = idx[:n_train], idx[n_train:]
+    clf = LogisticRegression(max_iter=500)
+    clf.fit(z[tr].numpy(), labels[tr])
+    return float(clf.score(z[te].numpy(), labels[te]))
+
+
+def aggregate_seeds(results):
+    """Group provider rows like 'library', 'library_s43' into mean ± std."""
+    import re
+
+    groups = {}
+    for name in results:
+        base = re.sub(r"_s\d+$", "", name)
+        groups.setdefault(base, []).append(name)
+
+    agg = {}
+    for base, names in groups.items():
+        if len(names) < 2:
+            continue
+        metrics = {}
+        for key in results[names[0]]:
+            vals = [results[n][key] for n in names if isinstance(results[n].get(key), float)]
+            if vals:
+                metrics[key] = {
+                    "mean": float(np.mean(vals)),
+                    "std": float(np.std(vals)),
+                    "n_seeds": len(vals),
+                }
+        agg[base] = metrics
+    return agg
 
 
 def within_pid_pt_r2(z, raw_flat):
@@ -232,7 +331,7 @@ def pair_distance_curves(providers, raw_flat, pool=20_000, chunk=2_000, max_pair
 
 def fig_retrieval(results):
     order = [n for n in [
-        "library", "library_cone", "library_hard",
+        "library", "library_rvq27", "vq_particle", "library_cone", "library_hard",
         "null_handcrafted", "raw_kinematics", "v1_contrastive", "v1_vqvae",
     ] if n in results]
     vals = [results[n]["criterion_recall_at_8"] for n in order]
@@ -307,11 +406,13 @@ def main() -> None:
     raw_flat = raw[mask]
     pid_flat = raw_flat[:, 3]
 
-    providers = embedding_providers(raw, scaled, mask)
+    providers, extras = embedding_providers(raw, scaled, mask)
     print(f"[providers] {list(providers)}  ({len(raw_flat):,} constituents)")
 
     rng = np.random.default_rng(SEED)
     sub = torch.from_numpy(rng.choice(len(raw_flat), min(4000, len(raw_flat)), replace=False))
+    pid_classes = raw_flat[:, 3].long().numpy()
+    charge_classes = (raw_flat[:, 4].round().long() + 1).numpy()
 
     results = {}
     for name, z in providers.items():
@@ -320,19 +421,27 @@ def main() -> None:
         rank = compute_embedding_collapse(z[sub])["effective_rank"]
         results[name] = {
             "criterion_recall_at_8": criterion_recall_at_k(z, raw_flat),
-            "retrieval_precision_at_8": float(res["precision_at_k"]),
-            "criterion_density": float(res["criterion_density"]),
             "knn_pid_purity": float(purity),
-            "effective_rank": float(rank),
+            "pid_probe_acc": linear_probe_accuracy(z, pid_classes),
+            "charge_probe_acc": linear_probe_accuracy(z, charge_classes),
             "within_pid_pt_r2": within_pid_pt_r2(z, raw_flat),
+            "effective_rank": float(rank),
+            "criterion_density": float(res["criterion_density"]),
             "dim": int(z.shape[-1]),
+            **extras.get(name, {}),
         }
         print(f"[{name:18s}] " + json.dumps(results[name]))
+
+    agg = aggregate_seeds(results)
+    if agg:
+        print("[aggregate] " + json.dumps(agg, indent=2))
 
     curves = pair_distance_curves(providers, raw_flat)
 
     FIGURES_DIR.mkdir(parents=True, exist_ok=True)
-    (FIGURES_DIR / "library_metrics.json").write_text(json.dumps(results, indent=2))
+    (FIGURES_DIR / "library_metrics.json").write_text(
+        json.dumps({"providers": results, "aggregate_over_seeds": agg}, indent=2)
+    )
     fig_retrieval(results)
     fig_pid_islands(providers, raw_flat)
     fig_cliff(curves)

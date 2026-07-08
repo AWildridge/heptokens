@@ -11,13 +11,16 @@ import pytest
 import torch as T
 from omegaconf import OmegaConf
 
+import sys
+from pathlib import Path
+
 from heptokens.data.collation import keep_raw_batch
 from heptokens.data.transforms import (
     PassthroughColumnsTransformer,
     create_preprocessing_transformer,
 )
 from heptokens.models.losses import physics_kernel_loss, supcon_physics_loss
-from heptokens.models.particle_encoder import ParticleEncoder
+from heptokens.models.particle_encoder import ParticleDecoder, ParticleEncoder
 from heptokens.models.utils import compute_retrieval_precision
 from heptokens.train import train
 
@@ -102,6 +105,52 @@ def test_particle_encoder_shapes_mask_and_pid_mapping():
 
     with pytest.raises(ValueError):
         ParticleEncoder(input_dim=3, pid_index=5)
+
+
+def test_particle_decoder_mixed_loss_and_layout():
+    dec = ParticleDecoder(
+        input_dim=8,
+        output_dim=5,
+        continuous_indices=(0, 1, 2),
+        pid_index=PID,
+        charge_index=CHG,
+        pdg_ids=(22, 211, -211),
+        hidden_dims=(16,),
+    )
+    z_q = T.randn(2, 6, 8, requires_grad=True)
+    csts = T.randn(2, 6, 5)
+    csts[..., PID] = T.tensor([22.0, 211.0, -211.0, 999.0, 22.0, 211.0])
+    csts[..., CHG] = T.tensor([0.0, 1.0, -1.0, 0.0, 0.0, 1.0])
+    mask = T.ones(2, 6, dtype=T.bool)
+    mask[1, -2:] = False
+    batch = {"csts": csts, "mask": mask}
+
+    loss = dec.compute_loss(z_q, batch)
+    assert T.isfinite(loss) and loss > 0
+    loss.backward()
+    assert T.isfinite(z_q.grad).all()
+
+    recon = dec(z_q.detach(), batch)
+    assert recon.shape == (2, 6, 5)
+    assert T.all(recon[~mask] == 0)  # masked zeroed
+    # Decoded categoricals land back in the physical vocabulary.
+    pids = recon[..., PID][mask].unique()
+    assert set(pids.tolist()) <= {22.0, 211.0, -211.0, 0.0}
+    charges = recon[..., CHG][mask].unique()
+    assert set(charges.tolist()) <= {-1.0, 0.0, 1.0}
+
+
+def test_residual_kmeans_rate_matched_row():
+    sys.path.insert(0, str(Path(__file__).parent.parent / "benchmarks"))
+    from eval_library import residual_kmeans_quantize
+
+    z = T.randn(4000, 8) * T.tensor([3.0, 2, 1, 1, 1, 1, 0.5, 0.5])
+    zq = residual_kmeans_quantize(z, n_stages=2, k=16, fit_n=2000)
+    assert zq.shape == z.shape
+    err_q = (z - zq).pow(2).mean()
+    err_mean = (z - z.mean(0)).pow(2).mean()
+    assert err_q < 0.5 * err_mean  # much better than the 1-code codebook
+    assert zq.unique(dim=0).shape[0] > 16  # residual stages compose codes
 
 
 # ------------------------------------------------------------- kernel loss

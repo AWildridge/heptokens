@@ -51,6 +51,60 @@ flattens all methods):
 Reproduce: `prepare_aoj.py` → `train_tokenizers.py --model library --data aoj
 [--region cone | --hard-windows]` → `eval_library.py`.
 
+## Campaign 2b — apples-to-apples: library vs VQ-VAE
+
+**The contract.** The `v1_vqvae` row above is *not* a fair comparison (different
+data, inputs, architecture). This campaign isolates the **objective axis** and
+holds everything else fixed: same AOJ data/split, same 5 inputs (scaled
+kinematics + PID + charge), the **same `ParticleEncoder`** (MLP 128-128-64,
+16-dim token), same schedule, **3 seeds each**. The VQ arm
+(`--model vqvae_particle`) adds only its own machinery: an RVQ bottleneck
+(3×512 = 27 bits/particle) and a `ParticleDecoder` trained to reconstruct the
+**full particle** (L1 kinematics + CE PID + CE charge — a kinematics-only
+target would strawman VQ on species metrics).
+
+| interface (AOJ, mean±std over 3 seeds) | criterion recall@8 ↑ᵃ | kNN PID purity | PID linear probe | pT R² (within PID) | eff. rank | bits/cst |
+|---|---|---|---|---|---|---|
+| **library (graded kernel)** | **0.9991 ± 0.0002** | 0.905 ± 0.003 | 0.366 ± 0.014 | 0.169 ± 0.006 | 15.8 | 256 (fp16) |
+| **VQ, matched (`vqvae_particle`)** | 0.9271 ± 0.0062 | **0.9961 ± 0.0004** | **0.9999 ± 0.0001** | **0.9706 ± 0.0006** | 5.5 ± 0.3 | **27** |
+| library → post-hoc RVQ @ 27 bits | 0.832 | 0.863 | 0.380 | 0.174 | 15.8 | 27 |
+| null: PID-one-hot ⊕ kin. (untrained) | 0.9833 | 0.9929 | 1.0 | 0.9488 | 5.1 | — |
+
+ᵃ criterion recall is the library's native objective (flagged); PID/charge
+probes and pT R² are reconstruction-flavoured (VQ-native-ish); purity and rank
+are neutral.
+
+Downstream consumer probe (jets5c, labels available; identical kinematics-only
+arms, same `VectorClassifier`): raw features 0.743 / 0.931 · **library tokens
+0.744 / 0.931** · VQ tokens 0.748 / 0.934 · v1 contrastive 0.701 / 0.917.
+
+**Findings**
+
+1. **The objectives are complementary, and neither dominates.** The library
+   owns the criterion geometry (miss rate 0.09% vs 7.3% — ~80× fewer misses
+   than the matched VQ); the VQ owns information sufficiency (PID and charge
+   perfectly linearly decodable, within-PID pT R² 0.97 vs 0.17).
+2. **Library species structure is metric, not linear:** kNN PID purity 0.91
+   but a *linear* PID probe scores ≈ the majority-class baseline (0.37 ≈ raw
+   kinematics 0.36) — the t-SNE islands are non-convex. Consumers using
+   nonlinear models see the structure; linear probes do not.
+3. **The library objective costs nothing downstream:** its jets5c probe sits
+   exactly at the raw-features ceiling (0.744/0.931), closing v1's −1.5 AUC
+   gap. Matched VQ is +0.3 AUC above ceiling (within noise).
+4. **Rate regime matters for the release format:** at 27 bits/particle the
+   *trained* VQ (recall 0.927) beats post-hoc-compressed library tokens
+   (0.832) — post-hoc compression holds at mild rates but trained quantization
+   defends the geometry better under ~10× compression.
+5. **VQ quantizer-0 partial collapse is robust across seeds** (15–19%
+   utilization; q1/q2 ≈ 100%) — the campaign-1 pathology, reproduced in the
+   matched setting.
+6. **Iteration 3 target is now quantified:** a hybrid objective (physics
+   kernel + reconstruction term) should aim for recall ≥ 0.999 **and**
+   pT R² ≥ 0.9 simultaneously — the two poles are measured.
+
+Reproduce: `benchmarks/run_sweep.sh` → `eval_library.py`;
+probe arm: `train_probes.py --arms library`.
+
 ---
 
 ## Campaign 1 — continuous contrastive vs VQ-VAE (jets5c)
