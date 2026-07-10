@@ -186,6 +186,83 @@ def test_hybrid_objective_adds_reconstruction_term():
     assert no_dec.decoder is None
 
 
+def test_contrastive_vqvae_shapes_codebook_with_kernel():
+    """Contrastive-VQ = VQ-VAE + physics kernel on z_q: all three loss terms
+    finite, gradients reach encoder and decoder, codebook is used."""
+    from functools import partial
+
+    from heptokens.models.contrastive_vqvae import LitContrastiveVqVae
+    from heptokens.models.utils import compute_codebook_utilization
+
+    common = dict(
+        continuous_indices=(0, 1, 2), pid_index=PID, charge_index=CHG,
+        pdg_ids=(22, 211, -211), hidden_dims=(16,),
+    )
+    model = LitContrastiveVqVae(
+        encoder=partial(ParticleEncoder, pid_emb_dim=4, charge_emb_dim=2, **common),
+        decoder=partial(ParticleDecoder, **common),
+        loss_fn=partial(
+            physics_kernel_loss, **KERNEL_KW, dpt_frac=0.5, deta_max=0.5, dphi_max=0.5
+        ),
+        kernel_weight=1.0,
+        codebook_size=16,
+        codebook_dim=4,
+        num_quantizers=2,
+        data_sample=T.randn(6, 5),
+    )
+    logged = {}
+    model.log = lambda name, value, *a, **k: logged.__setitem__(name, value)
+
+    csts = T.rand(3, 6, 5) + 0.1
+    csts[..., PID] = 211.0
+    csts[..., CHG] = 1.0
+    batch = {"csts": csts, "mask": T.ones(3, 6, dtype=T.bool)}
+
+    loss = model.training_step(batch, 0)
+    assert T.isfinite(loss)
+    # all three terms were logged and are finite
+    for term in ("train/kernel_loss", "train/recon_loss", "train/commit_loss"):
+        assert term in logged and T.isfinite(T.as_tensor(logged[term]))
+
+    loss.backward()
+    for module in (model.encoder, model.decoder):
+        assert any(
+            p.grad is not None and T.isfinite(p.grad).all() for p in module.parameters()
+        )
+
+    # codebook is actually populated
+    _, indices, _ = model.encode(batch)
+    utils = compute_codebook_utilization(indices, batch["mask"], model.codebook_size)
+    assert all(u > 0 for u in utils)
+
+
+def test_contrastive_vqvae_without_kernel_is_plain_vq():
+    """loss_fn=None (the state after load_from_checkpoint) degrades cleanly to a
+    plain VQ-VAE: reconstruction + commitment only, no kernel term."""
+    from functools import partial
+
+    from heptokens.models.contrastive_vqvae import LitContrastiveVqVae
+
+    common = dict(
+        continuous_indices=(0, 1, 2), pid_index=PID, charge_index=CHG,
+        pdg_ids=(22, 211, -211), hidden_dims=(16,),
+    )
+    model = LitContrastiveVqVae(
+        encoder=partial(ParticleEncoder, pid_emb_dim=4, charge_emb_dim=2, **common),
+        decoder=partial(ParticleDecoder, **common),
+        loss_fn=None,
+        codebook_size=16, codebook_dim=4, num_quantizers=2,
+        data_sample=T.randn(6, 5),
+    )
+    logged = {}
+    model.log = lambda name, value, *a, **k: logged.__setitem__(name, value)
+    batch = {"csts": T.rand(3, 6, 5) + 0.1, "mask": T.ones(3, 6, dtype=T.bool)}
+
+    loss = model.training_step(batch, 0)
+    assert T.isfinite(loss)
+    assert "train/kernel_loss" not in logged  # kernel skipped when loss_fn is None
+
+
 def test_residual_kmeans_rate_matched_row():
     sys.path.insert(0, str(Path(__file__).parent.parent / "benchmarks"))
     from eval_library import residual_kmeans_quantize

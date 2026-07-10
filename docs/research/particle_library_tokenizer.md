@@ -182,15 +182,43 @@ dim study (AOJ, 15 epochs, seed 42; full table in `benchmarks/README.md`
   needed 16 dims — 8-D is the recommended library size. Dim 4 is the floor
   (recall drops to 0.980; purity holds).
 
+## 7d. Compression: criterion-shaped VQ vs low-dim continuous (iteration 4)
+
+Can the token be genuinely *compressed* (the continuous token is anti-compressive
+— 96–256 bits vs a ~50-bit raw particle)? Two routes tested against plain VQ, all
+AOJ, 15 epochs (full table in `benchmarks/README.md` §Campaign 4):
+
+- **Criterion-shaping a VQ codebook fails — a robust negative.** Adding the
+  physics kernel to a residual-VQ (`LitContrastiveVqVae`) *underperforms* plain
+  reconstruction-only VQ at the same 27 bits, whether the kernel organizes the
+  quantized code (`z_q`: recall 0.708) or the continuous pre-quantization
+  embedding (`z_e`: 0.772) vs plain VQ's 0.927 ± 0.006. The kernel spreads the
+  representation to all 16 dims (eff. rank 15+ vs plain VQ's 5.6) but quantization
+  cannot preserve that geometry and disrupts the clean recon-induced clustering.
+  Injecting the criterion *into the codebook* does not yield a compact
+  criterion-preserving token.
+- **Compression works on the continuous side.** The continuous library compresses
+  256→96 bits (dim 16→6) with the criterion *sharper*: recall 0.9992→0.9996,
+  purity 0.906→0.980, pT R² *rising* 0.175→0.743. **dim-6 dominates every VQ
+  point** (`library_rate.png`); dim-4 (64 bits) is the floor.
+- **Granularity beats bit-count** for VQ: RVQ 512×3 (0.927) ≫ a single 8192
+  codebook that collapses to 1.7% util (0.028). **The encoder is overbuilt** —
+  MLP width 64 matches 256.
+- **Honest tradeoff:** sub-raw compression (VQ, 13–27 bits) costs criterion
+  recall; criterion-preserving compression (continuous dim-6, 96 bits) sits at
+  ~2× the raw particle. Nothing tried is both sub-raw *and* criterion-perfect.
+
 ## 8. Roadmap
 
 1. **Iteration 3 — done (frontier, not corner).** The hybrid objective delivers a
    *controllable* recall/pT-R² trade-off but no single weight reaches recall
-   ≥ 0.999 **and** R² ≥ 0.9 at once; expose `recon_weight` as a release knob. The
-   embedding compresses to 8-D with the criterion improving. Open follow-up if a
-   single token must hit both poles: decouple the axes (e.g. a two-part release —
-   library token ⊕ a small scaled-kinematics channel — rather than forcing one
-   16/8-D vector to carry both).
+   ≥ 0.999 **and** R² ≥ 0.9 at once; expose `recon_weight` as a release knob.
+2. **Iteration 4 — done (compress continuous, not discrete).** Criterion-shaped
+   VQ is falsified (both `z_q`/`z_e` < plain VQ); the compression path is the
+   **continuous dim-6 token** (96 bits, recall 0.9996, pT R² 0.743), and the
+   encoder can be halved to width 64. Open question — a token that is *both*
+   sub-raw *and* criterion-perfect: pursue decoupling (dim-6 library ⊕ an explicit
+   scaled-kinematics channel) rather than a VQ bottleneck, or accept the tradeoff.
 2. **Release contract:** version tokens (dim, preprocessing hash, checkpoint
    id) via `export_latents.py`; post-hoc compression (fp16 / PQ).
 3. **Cross-experiment:** mixed CMS + second-detector batches under the same

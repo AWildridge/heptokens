@@ -1,5 +1,58 @@
 # Tokenizer benchmarks
 
+## Campaign 4 — compressive tokens: criterion-shaped VQ, low-dim, capacity
+
+**The question.** The continuous library token is *anti-compressive*: a raw
+particle packs into ~50 bits, but the token is 128 bits (dim-8 fp16) to 256
+(dim-16). Genuine compression needs a discrete codebook — so does *shaping that
+codebook with the physics kernel* give a compact token that keeps the criterion?
+And separately: how far does the continuous token compress, and is the encoder
+overbuilt? All arms AOJ, 15 epochs; VQ rate = num_quantizers·log₂(codebook).
+
+| artifact | bits | recall@8 ↑ | kNN purity | pT R² | eff. rank | note |
+|---|---|---|---|---|---|---|
+| library (dim 16) | 256 | 0.9992 | 0.906 | 0.175 | 15.8 | continuous, iter-2 |
+| **library dim 6** | **96** | **0.9996** | **0.980** | **0.743** | 6.0 | continuous sweet spot |
+| library dim 8 | 128 | 0.9997 | 0.973 | 0.445 | 8.0 | |
+| library dim 4 | 64 | 0.9807 | 0.987 | 0.684 | 4.0 | continuous floor |
+| plain VQ (RVQ 512×3) | 27 | 0.927 ± .006 | 0.996 | 0.971 | 5.6 | 3 seeds |
+| contrastive-VQ (kernel→z_q) | 27 | 0.708 | 0.991 | 0.719 | 15.2 | kernel **hurt** |
+| contrastive-VQ (kernel→z_e) | 27 | 0.772 | 0.901 | 0.295 | 15.8 | still < plain VQ |
+| VQ single 8192 codebook | 13 | 0.028 | 0.996 | 0.821 | 8.3 | collapsed, 1.7% util |
+
+**Findings**
+
+1. **Criterion-shaping a VQ codebook fails — the headline negative.** Adding the
+   physics kernel to the VQ *underperforms* plain reconstruction-only VQ at the
+   same 27 bits, whether the kernel organizes the quantized code (`z_q`: 0.708)
+   or the continuous pre-quantization embedding (`z_e`: 0.772) vs plain VQ's
+   0.927. The kernel and the discrete reconstruction bottleneck fight: the kernel
+   spreads the representation to all 16 dims (eff. rank 15+ vs plain VQ's compact
+   5.6) but quantization cannot preserve that geometry, and it disrupts the clean
+   reconstruction-induced clustering. Injecting the criterion *into the codebook*
+   does not yield a compact criterion-preserving token.
+2. **Compression works — on the continuous side.** The continuous library
+   compresses 256→96 bits (dim 16→6) with the criterion *intact and sharper*:
+   recall 0.9992→0.9996, purity 0.906→0.980, and pT R² *rising* 0.175→0.743
+   (fewer dims force the token to retain kinematics it otherwise discards inside
+   the 10% window). **dim-6 dominates every VQ point** on the compression curve.
+   dim-4 (64 bits) is the floor (recall 0.981). To keep the criterion under
+   compression, shrink the continuous token; do not quantize it.
+3. **Among VQ options, granularity beats bit-count.** RVQ 512×3 (0.927) crushes a
+   single 8192 codebook that collapses to 1.7% utilization (recall 0.028) — the
+   coarse code cannot rank true partners within a shared code. How the bits are
+   spent matters far more than how many.
+4. **The encoder is overbuilt.** MLP width 64 (hidden 64,64,32) matches width 256
+   (recall 0.998 vs 0.9998); only width 32 dips (0.989). The context-free encoder
+   can be more than halved.
+
+**The honest tradeoff.** Genuine sub-raw compression (VQ, 13–27 bits) costs
+criterion recall; criterion-preserving compression (continuous dim-6, 96 bits)
+lands at ~2× the raw particle. No method tried is *both* sub-raw *and*
+criterion-perfect. See `library_rate.png` (the compression curve).
+
+Reproduce: `run_iter4.sh` + the `--kernel-on z_e` variant → `eval_library.py`.
+
 ## Campaign 3 — hybrid objective, tighter ΔpT, and embedding-size study
 
 **The question.** Campaign 2 left the library with strong criterion geometry but

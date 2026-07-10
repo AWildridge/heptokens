@@ -32,6 +32,7 @@ from common import FIGURES_DIR, LIBRARY_CRITERION, SEED, TOKENIZER_DIR, make_dat
 from make_plots import BASE, C_CLASS, INK, INK2, MUTED, savefig  # shared style (rcParams on import)
 
 from heptokens.models.contrastive import LitContrastiveTokenizer
+from heptokens.models.contrastive_vqvae import LitContrastiveVqVae
 from heptokens.models.utils import (
     compute_embedding_collapse,
     compute_knn_pid_purity,
@@ -121,6 +122,25 @@ def embedding_providers(raw, scaled, mask):
         batch = {"csts": csts.to(DEVICE), "mask": mask.to(DEVICE)}
         return model.encode(batch)[0][mask].cpu()
 
+    def vq_encode(model, csts, chunk=256):
+        """Chunked VQ encode -> (z_q on valid constituents, codebook util list).
+
+        Chunked over jets so the ``[N_constituents, codebook_size]`` distance
+        matrix stays small — an 8192 codebook over the full pool is a ~10 GB
+        spike that crashes the 20 GB MIG slice otherwise. Chunking is exact
+        (VQ assignment is per-constituent independent)."""
+        zqs, idxs = [], []
+        for s in range(0, csts.shape[0], chunk):
+            msl = mask[s:s + chunk]
+            batch = {"csts": csts[s:s + chunk].to(DEVICE), "mask": msl.to(DEVICE)}
+            z_q, idx, _ = model.encode(batch)
+            zqs.append(z_q[msl.to(z_q.device)].cpu())
+            idxs.append(idx.cpu())
+        util = compute_codebook_utilization(
+            torch.cat(idxs, dim=0), mask.cpu(), codebook_size=model.codebook_size
+        )
+        return torch.cat(zqs), util
+
     # Library arm + seed variants, and its ablations.
     for provider, run in seed_runs("library_aoj"):
         model = load_tokenizer(run)
@@ -142,14 +162,34 @@ def embedding_providers(raw, scaled, mask):
     for provider, run in seed_runs("vqvae_particle_aoj"):
         model = load_tokenizer(run, cls=LitVqVae)
         if model is not None:
-            batch = {"csts": scaled.to(DEVICE), "mask": mask.to(DEVICE)}
-            z_q, idx, _ = model.encode(batch)
             name = provider.replace("vqvae_particle", "vq_particle")
-            out[name] = z_q[mask].cpu()
-            util = compute_codebook_utilization(
-                idx.cpu(), mask.cpu(), codebook_size=model.codebook_size
-            )
+            out[name], util = vq_encode(model, scaled)
             extras[name] = {f"codebook_util_q{q}": float(v) for q, v in enumerate(util)}
+
+    # Contrastive-VQ: same RVQ rate as vqvae_particle, but the codebook is
+    # shaped by the physics kernel (z_q or z_e variants). Matched config ->
+    # isolates the kernel.
+    for d in sorted(TOKENIZER_DIR.glob("contrastive_vqvae_aoj*")):
+        model = load_tokenizer(d.name, cls=LitContrastiveVqVae)
+        if model is not None:
+            name = d.name.replace("contrastive_vqvae", "contrastive_vq").replace("_aoj", "")
+            out[name], util = vq_encode(model, scaled)
+            extras[name] = {f"codebook_util_q{q}": float(v) for q, v in enumerate(util)}
+
+    # Production-analog anchor: plain VQ at a single 8192 codebook (13 bits).
+    anchor = load_tokenizer("vqvae_particle_k8192", cls=LitVqVae)
+    if anchor is not None:
+        out["vq_k8192"], util = vq_encode(anchor, scaled)
+        extras["vq_k8192"] = {f"codebook_util_q{q}": float(v) for q, v in enumerate(util)}
+
+    # Low-dim continuous library + encoder-capacity ablation (kernel-only),
+    # named library_aoj_d{4,6,8} and library_aoj_h{32,64,256}.
+    for d in sorted(TOKENIZER_DIR.glob("library_aoj_d*")) + sorted(
+        TOKENIZER_DIR.glob("library_aoj_h*")
+    ):
+        model = load_tokenizer(d.name)
+        if model is not None:
+            out[d.name.replace("_aoj", "")] = encode_with(model, scaled)
 
     # Rate-matched library row: post-hoc RVQ at 27 bits/particle.
     if "library" in out:
@@ -335,6 +375,59 @@ def pair_distance_curves(providers, raw_flat, pool=20_000, chunk=2_000, max_pair
     return curves
 
 
+def provider_bits(name: str, dim: int) -> int:
+    """Release rate in bits/particle: VQ = num_quantizers * log2(codebook_size);
+    a continuous fp16 token = dim * 16."""
+    if name == "vq_k8192":
+        return 13  # 1 x log2(8192)
+    if name.startswith(("vq_particle", "contrastive_vq")) or name in (
+        "library_rvq27", "v1_vqvae"
+    ):
+        return 27  # 3 x log2(512)
+    return dim * 16  # continuous fp16
+
+
+def fig_rate(results):
+    """Compression curve: criterion recall vs release rate (bits/particle).
+
+    The one figure the iteration is about — does the library criterion survive
+    compression, and where does it break?  x is log-scale bits; the ~50-bit raw
+    particle is marked so anti-compressive tokens (right of it) are visible.
+    """
+    def family(name):
+        if name.startswith("contrastive_vq"):
+            return "contrastive-VQ", "#8250df"
+        if name.startswith("hybrid"):
+            return "hybrid (continuous)", "#e34948"
+        if name.startswith("vq") or name in ("library_rvq27", "v1_vqvae"):
+            return "plain VQ", "#eda100"
+        if name.startswith("library"):
+            return "library (continuous)", "#1baf7a"
+        return "reference", MUTED
+
+    fig, ax = plt.subplots(figsize=(6.8, 4.4))
+    ax.axvline(50, color=BASE, lw=1, ls=":")
+    ax.annotate("raw particle ~50 bits", (50, 0.03), xycoords=("data", "axes fraction"),
+                fontsize=7.5, color=MUTED, rotation=90, va="bottom", ha="right")
+    seen = set()
+    for name, r in results.items():
+        bits, y = r.get("bits"), r.get("criterion_recall_at_8")
+        if bits is None or y is None:
+            continue
+        label, color = family(name)
+        ax.scatter(bits, y, s=55, color=color, zorder=3,
+                   label=None if label in seen else label)
+        seen.add(label)
+        ax.annotate(name, (bits, y), xytext=(5, 3), textcoords="offset points",
+                    fontsize=6.6, color=INK2)
+    ax.set_xscale("log", base=2)
+    ax.set_xlabel("release rate (bits / particle, log scale)")
+    ax.set_ylabel("criterion recall@8")
+    ax.set_title("Compression curve: does the criterion survive fewer bits?")
+    ax.legend(fontsize=8, loc="lower right")
+    savefig(fig, "library_rate.png")
+
+
 def fig_retrieval(results):
     order = [n for n in [
         "library", "library_rvq27", "vq_particle", "library_cone", "library_hard",
@@ -459,6 +552,7 @@ def main() -> None:
             "effective_rank": float(rank),
             "criterion_density": float(res["criterion_density"]),
             "dim": int(z.shape[-1]),
+            "bits": provider_bits(name, int(z.shape[-1])),
             **extras.get(name, {}),
         }
         print(f"[{name:18s}] " + json.dumps(results[name]))
@@ -475,6 +569,7 @@ def main() -> None:
     )
     fig_retrieval(results)
     fig_pareto(results)
+    fig_rate(results)
     fig_pid_islands(providers, raw_flat)
     fig_cliff(curves)
     print(f"[done] metrics + figures written to {FIGURES_DIR}")
