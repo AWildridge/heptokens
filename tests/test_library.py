@@ -140,6 +140,52 @@ def test_particle_decoder_mixed_loss_and_layout():
     assert set(charges.tolist()) <= {-1.0, 0.0, 1.0}
 
 
+def test_hybrid_objective_adds_reconstruction_term():
+    from functools import partial
+
+    from heptokens.models.contrastive import LitContrastiveTokenizer
+    from heptokens.models.losses import physics_kernel_loss
+
+    common = dict(
+        continuous_indices=(0, 1, 2), pid_index=PID, charge_index=CHG,
+        pdg_ids=(22, 211, -211), hidden_dims=(16,),
+    )
+    model = LitContrastiveTokenizer(
+        encoder=partial(ParticleEncoder, pid_emb_dim=4, charge_emb_dim=2, **common),
+        loss_fn=partial(
+            physics_kernel_loss, **KERNEL_KW, dpt_frac=0.5, deta_max=0.5, dphi_max=0.5
+        ),
+        loss_inputs="features",
+        use_projector=False,
+        decoder=partial(ParticleDecoder, **common),
+        recon_weight=2.0,
+        latent_dim=4,
+        data_sample=T.randn(6, 5),
+    )
+    model.log = lambda *a, **k: None  # outside a trainer
+
+    csts = T.rand(3, 6, 5) + 0.1
+    csts[..., PID] = 211.0
+    csts[..., CHG] = 1.0
+    batch = {"csts": csts, "mask": T.ones(3, 6, dtype=T.bool)}
+
+    loss = model.training_step(batch, 0)
+    assert T.isfinite(loss)
+    loss.backward()
+    assert any(
+        p.grad is not None and T.isfinite(p.grad).all()
+        for p in model.decoder.parameters()
+    )
+    # recon_weight=0 must not build a decoder.
+    no_dec = LitContrastiveTokenizer(
+        encoder=partial(ParticleEncoder, **common),
+        loss_inputs="features", use_projector=False,
+        decoder=partial(ParticleDecoder, **common), recon_weight=0.0,
+        latent_dim=4, data_sample=T.randn(6, 5),
+    )
+    assert no_dec.decoder is None
+
+
 def test_residual_kmeans_rate_matched_row():
     sys.path.insert(0, str(Path(__file__).parent.parent / "benchmarks"))
     from eval_library import residual_kmeans_quantize

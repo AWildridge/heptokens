@@ -160,12 +160,37 @@ bits/particle) with a `ParticleDecoder` reconstructing the full particle
   This refines §1d of the survey doc.
 - VQ quantizer-0 partial collapse reproduces across all seeds (15–19% util).
 
+## 7c. Hybrid objective + embedding-size study (iteration 3)
+
+The hybrid arm adds a `ParticleDecoder` reconstruction term (weight `w`) to the
+kernel, reconstructing scaled kinematics + PID + charge from the token. Sweep and
+dim study (AOJ, 15 epochs, seed 42; full table in `benchmarks/README.md`
+§Campaign 3):
+
+- **Organization vs information is a controllable frontier.** `w` interpolates
+  smoothly between the kernel pole (w=0.3: recall@8 0.9992, pT R² 0.36) and the
+  reconstruction pole (w=3.0: recall@8 0.9955, R² 0.908). No single `w` clears
+  **both** recall ≥ 0.999 and R² ≥ 0.9 — the target corner is not reachable by
+  weight alone; the nearest point (w=3.0) meets R² and misses recall by ~0.004.
+  The practical outcome is a tunable release dial, not a dominated optimum
+  (`benchmarks/figures/library_pareto.png`).
+- **Tighter ΔpT (5%) sharpens the pT pole modestly:** at w=2.0, R² 0.807→0.891
+  and tight-criterion recall 0.9961→0.9971, at a small cost to loose recall.
+- **The token halves for free.** The 16-D token was *larger than the 5-column
+  input*; compressing to **8-D raised** criterion recall (0.9968→0.9982) and kNN
+  purity (0.918→0.987), softening only pT R² (0.807→0.613). The criterion never
+  needed 16 dims — 8-D is the recommended library size. Dim 4 is the floor
+  (recall drops to 0.980; purity holds).
+
 ## 8. Roadmap
 
-1. **Iteration 3 (quantified target):** hybrid objective — physics kernel +
-   reconstruction/kinematic-preservation term — aiming for criterion recall
-   ≥ 0.999 **and** within-PID pT R² ≥ 0.9 simultaneously (both poles now
-   measured).
+1. **Iteration 3 — done (frontier, not corner).** The hybrid objective delivers a
+   *controllable* recall/pT-R² trade-off but no single weight reaches recall
+   ≥ 0.999 **and** R² ≥ 0.9 at once; expose `recon_weight` as a release knob. The
+   embedding compresses to 8-D with the criterion improving. Open follow-up if a
+   single token must hit both poles: decouple the axes (e.g. a two-part release —
+   library token ⊕ a small scaled-kinematics channel — rather than forcing one
+   16/8-D vector to carry both).
 2. **Release contract:** version tokens (dim, preprocessing hash, checkpoint
    id) via `export_latents.py`; post-hoc compression (fp16 / PQ).
 3. **Cross-experiment:** mixed CMS + second-detector batches under the same

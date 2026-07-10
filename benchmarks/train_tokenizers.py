@@ -68,9 +68,25 @@ def build_contrastive(data_sample):
     )
 
 
-def build_library(data_sample, data, region="coords", hard_windows=False):
-    """Particle-library tokenizer (context-free MLP + graded physics kernel)."""
+def build_library(
+    data_sample,
+    data,
+    region="coords",
+    hard_windows=False,
+    recon_weight=0.0,
+    dpt_frac=None,
+    latent_dim=LATENT_DIM,
+):
+    """Particle-library tokenizer (context-free MLP + graded physics kernel).
+
+    With ``recon_weight > 0`` this becomes the **hybrid** objective: the
+    ParticleDecoder reconstruction term preserves particle information while
+    the kernel shapes the metric.
+    """
     has_pid = data == "aoj"  # jets5c carries only (pt, deta, dphi)
+    criterion = dict(LIBRARY_CRITERION)
+    if dpt_frac is not None:
+        criterion["dpt_frac"] = dpt_frac
     encoder = partial(
         ParticleEncoder,
         continuous_indices=(0, 1, 2),
@@ -88,7 +104,7 @@ def build_library(data_sample, data, region="coords", hard_windows=False):
             pid_index=3 if has_pid else None,
             charge_index=4 if has_pid else None,
             pt_index=0, eta_index=1, phi_index=2,
-            dpt_frac=0.1, deta_max=0.1, dphi_max=0.1,
+            dpt_frac=criterion["dpt_frac"], deta_max=0.1, dphi_max=0.1,
             max_points=4096,
         )
     else:
@@ -99,14 +115,25 @@ def build_library(data_sample, data, region="coords", hard_windows=False):
             region=region,
             dr_max=0.1,
             max_points=4096,
-            **LIBRARY_CRITERION,
+            **criterion,
+        )
+    decoder = None
+    if recon_weight > 0:
+        decoder = partial(
+            ParticleDecoder,
+            continuous_indices=(0, 1, 2),
+            pid_index=3 if has_pid else None,
+            charge_index=4 if has_pid else None,
+            hidden_dims=(128, 128, 64),
         )
     return LitContrastiveTokenizer(
         encoder=encoder,
         loss_fn=loss_fn,
         loss_inputs="features",
         use_projector=False,
-        latent_dim=LATENT_DIM,
+        decoder=decoder,
+        recon_weight=recon_weight,
+        latent_dim=latent_dim,
         learning_rate=1e-3,
         scheduler=partial(warmup_cosine_scheduler, warmup_epochs=3),
         data_sample=data_sample,
@@ -162,12 +189,18 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--model",
-        choices=["library", "contrastive", "vqvae", "vqvae_particle"],
+        choices=["library", "hybrid", "contrastive", "vqvae", "vqvae_particle"],
         required=True,
     )
     parser.add_argument("--data", choices=["jets5c", "aoj"], default="jets5c")
     parser.add_argument("--region", choices=["coords", "cone"], default="coords")
     parser.add_argument("--hard-windows", action="store_true")
+    parser.add_argument("--recon-weight", type=float, default=1.0,
+                        help="hybrid only: weight of the reconstruction term")
+    parser.add_argument("--dpt-frac", type=float, default=None,
+                        help="override the kernel dpT width (default 0.1)")
+    parser.add_argument("--latent-dim", type=int, default=None,
+                        help="override token dimension (default 16)")
     parser.add_argument("--run-name", default=None, help="override output dir name")
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--epochs", type=int, default=20)
@@ -191,9 +224,15 @@ def main() -> None:
     data_sample = dm.get_data_sample()
     print(f"data sample: {tuple(data_sample.shape)}")
 
-    if args.model == "library":
+    if args.model in ("library", "hybrid"):
         model = build_library(
-            data_sample, args.data, region=args.region, hard_windows=args.hard_windows
+            data_sample,
+            args.data,
+            region=args.region,
+            hard_windows=args.hard_windows,
+            recon_weight=args.recon_weight if args.model == "hybrid" else 0.0,
+            dpt_frac=args.dpt_frac,
+            latent_dim=args.latent_dim or LATENT_DIM,
         )
         monitor_cb = ContrastiveMonitor(
             max_batches=4, pid_index=3 if args.data == "aoj" else None

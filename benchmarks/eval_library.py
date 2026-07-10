@@ -131,6 +131,12 @@ def embedding_providers(raw, scaled, mask):
         if model is not None:
             out[name.replace("_aoj", "")] = encode_with(model, scaled)
 
+    # Iteration-3 hybrid arms (kernel + reconstruction), any run dir hybrid*.
+    for d in sorted(TOKENIZER_DIR.glob("hybrid*")):
+        model = load_tokenizer(d.name)
+        if model is not None:
+            out[d.name.replace("_aoj", "")] = encode_with(model, scaled)
+
     # Apples-to-apples VQ baseline: same encoder/inputs, RVQ bottleneck,
     # full-particle reconstruction objective. + seed variants.
     for provider, run in seed_runs("vqvae_particle_aoj"):
@@ -170,7 +176,7 @@ def embedding_providers(raw, scaled, mask):
 
 
 @torch.no_grad()
-def criterion_recall_at_k(z, raw_flat, k=8, pool=30_000, chunk=2_000):
+def criterion_recall_at_k(z, raw_flat, k=8, pool=30_000, chunk=2_000, dpt_frac=0.1):
     """Availability-aware retrieval: of an anchor's *available* criterion
     partners in the pool, what fraction rank inside its top-k neighbours?
 
@@ -194,7 +200,7 @@ def criterion_recall_at_k(z, raw_flat, k=8, pool=30_000, chunk=2_000):
         end = min(start + chunk, n)
         dpt = (pt[start:end, None] - pt[None, :]).abs()
         scale = torch.maximum(pt[start:end, None], pt[None, :]).clamp(min=1e-6)
-        crit = (dpt / scale <= 0.1)
+        crit = (dpt / scale <= dpt_frac)
         crit &= (eta[start:end, None] - eta[None, :]).abs() <= 0.1
         dphi = (phi[start:end, None] - phi[None, :] + np.pi) % (2 * np.pi) - np.pi
         crit &= dphi.abs() <= 0.1
@@ -333,7 +339,7 @@ def fig_retrieval(results):
     order = [n for n in [
         "library", "library_rvq27", "vq_particle", "library_cone", "library_hard",
         "null_handcrafted", "raw_kinematics", "v1_contrastive", "v1_vqvae",
-    ] if n in results]
+    ] if n in results] + sorted(n for n in results if n.startswith("hybrid"))
     vals = [results[n]["criterion_recall_at_8"] for n in order]
 
     fig, ax = plt.subplots(figsize=(6.4, 3.2))
@@ -348,6 +354,30 @@ def fig_retrieval(results):
     ax.set_title("Does the embedding rank criterion partners on top?")
     ax.grid(axis="y", visible=False)
     savefig(fig, "library_retrieval.png")
+
+
+def fig_pareto(results):
+    """The two poles at once: criterion geometry vs information retention."""
+    fig, ax = plt.subplots(figsize=(6.2, 4.4))
+    ax.axvspan(0.999, 1.001, color="#cde2fb", alpha=0.4, lw=0)
+    ax.axhspan(0.9, 1.02, color="#cde2fb", alpha=0.4, lw=0)
+    ax.annotate("iteration-3 target", (0.999, 0.92), fontsize=8, color=MUTED,
+                ha="right")
+    for name, r in results.items():
+        x, y = r["criterion_recall_at_8"], r["within_pid_pt_r2"]
+        is_hybrid = name.startswith("hybrid")
+        color = "#e34948" if is_hybrid else (
+            "#1baf7a" if name.startswith("library") else
+            "#eda100" if "vq" in name else "#2a78d6")
+        ax.scatter(x, y, s=55, color=color, zorder=3)
+        ax.annotate(name, (x, y), xytext=(5, 4), textcoords="offset points",
+                    fontsize=7.5, color=INK2)
+    ax.set_xlabel("criterion recall@8 (organization)")
+    ax.set_ylabel("within-PID pT R² (information)")
+    ax.set_xlim(-0.02, 1.05)
+    ax.set_ylim(-0.02, 1.05)
+    ax.set_title("Organization vs information — all interfaces")
+    savefig(fig, "library_pareto.png")
 
 
 def fig_pid_islands(providers, raw_flat):
@@ -421,6 +451,7 @@ def main() -> None:
         rank = compute_embedding_collapse(z[sub])["effective_rank"]
         results[name] = {
             "criterion_recall_at_8": criterion_recall_at_k(z, raw_flat),
+            "recall_at_8_dpt5": criterion_recall_at_k(z, raw_flat, dpt_frac=0.05),
             "knn_pid_purity": float(purity),
             "pid_probe_acc": linear_probe_accuracy(z, pid_classes),
             "charge_probe_acc": linear_probe_accuracy(z, charge_classes),
@@ -443,6 +474,7 @@ def main() -> None:
         json.dumps({"providers": results, "aggregate_over_seeds": agg}, indent=2)
     )
     fig_retrieval(results)
+    fig_pareto(results)
     fig_pid_islands(providers, raw_flat)
     fig_cliff(curves)
     print(f"[done] metrics + figures written to {FIGURES_DIR}")

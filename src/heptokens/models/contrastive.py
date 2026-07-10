@@ -65,6 +65,8 @@ class LitContrastiveTokenizer(ScheduledOptimiserMixin, LightningModule):
         loss_inputs: str = "two_view",
         raw_key: str = "csts_raw",
         use_projector: bool = True,
+        decoder=None,
+        recon_weight: float = 0.0,
         data_sample: torch.Tensor = None,
         input_dim: int | None = None,
         **kwargs,
@@ -97,6 +99,14 @@ class LitContrastiveTokenizer(ScheduledOptimiserMixin, LightningModule):
         if encoder is None:
             encoder = Encoder
         self.encoder = encoder(input_dim=input_dim, output_dim=latent_dim)
+
+        # Optional hybrid objective: a decoder adds a reconstruction term so
+        # the token preserves particle information alongside the metric the
+        # contrastive loss shapes (kernel organizes, reconstruction retains).
+        self.decoder = None
+        self.recon_weight = recon_weight
+        if decoder is not None and recon_weight > 0:
+            self.decoder = decoder(input_dim=latent_dim, output_dim=input_dim)
 
         self.projector = nn.Sequential(
             nn.Linear(latent_dim, proj_hidden),
@@ -174,6 +184,10 @@ class LitContrastiveTokenizer(ScheduledOptimiserMixin, LightningModule):
             z_flat = self.projector(z_flat)
 
         loss, components = self.loss_fn(z_flat, f_flat)
+        if self.decoder is not None:
+            recon = self.decoder.compute_loss(z, batch)
+            components = {**components, "recon_loss": recon}
+            loss = loss + self.recon_weight * recon
         self.log(f"{prefix}/total_loss", loss, prog_bar=True)
         for name, value in components.items():
             self.log(f"{prefix}/{name}", value)

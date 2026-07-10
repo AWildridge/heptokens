@@ -1,5 +1,54 @@
 # Tokenizer benchmarks
 
+## Campaign 3 — hybrid objective, tighter ΔpT, and embedding-size study
+
+**The question.** Campaign 2 left the library with strong criterion geometry but
+weak within-PID pT recovery (R² 0.18). Iteration 3 asks: can a **hybrid
+objective** (physics kernel + a `ParticleDecoder` reconstruction term, weight
+`w`) lift pT R² without breaking the criterion; does tightening the ΔpT kernel to
+5% help; and — since the 16-D token is *larger than the 5-column input* — can the
+embedding shrink without degrading the library? All runs: AOJ, hybrid arm, 15
+epochs, seed 42.
+
+| run | dim | recall@8 ↑ | recall@8 (ΔpT 5%) | within-PID pT R² | kNN PID purity | eff. rank |
+|---|---|---|---|---|---|---|
+| library (kernel only) | 16 | **0.9992** | 0.9995 | 0.175 | 0.906 | 15.8 |
+| hybrid w=0.3 | 16 | 0.9992 | 0.9993 | 0.360 | 0.899 | 15.5 |
+| hybrid w=1.0 | 16 | 0.9984 | 0.9983 | 0.867 | 0.915 | 15.3 |
+| hybrid w=2.0 | 16 | 0.9968 | 0.9961 | 0.807 | 0.918 | 15.3 |
+| hybrid w=3.0 | 16 | 0.9955 | 0.9947 | **0.908** | 0.935 | 15.2 |
+| hybrid w=2.0, ΔpT 5% | 16 | 0.9954 | 0.9971 | 0.891 | 0.909 | 15.3 |
+| **hybrid w=2.0, dim 8** | 8 | 0.9982 | 0.9987 | 0.613 | **0.987** | 7.8 |
+| hybrid w=2.0, dim 4 | 4 | 0.9801 | 0.9914 | 0.799 | 0.987 | 3.8 |
+
+**Findings**
+
+1. **Recall and pT R² are a controllable frontier, not a corner you can reach at
+   once.** `recon_weight` interpolates smoothly — w=0.3 owns recall
+   (0.9992/0.36), w=3.0 owns pT R² (0.9955/0.908) — but no single weight clears
+   both the recall ≥ 0.999 *and* R² ≥ 0.9 target. The nearest point is w=3.0,
+   which meets R² and misses recall by ~0.004. The hybrid buys a tunable dial
+   between organization and information, which is the right release knob to
+   expose; the "both corners" ideal is not attainable by weight alone.
+   See `library_pareto.png`.
+2. **Tightening ΔpT to 5% sharpens pT fidelity, modestly.** At fixed w=2.0,
+   10%→5% lifted R² 0.807→0.891 and the tight-criterion recall@8 0.9961→0.9971,
+   costing a little loose recall (0.9968→0.9954). It nudges the pT pole but does
+   not cross the target corner.
+3. **The embedding halves for free — and the criterion improves.** Going 16→8
+   dims *raised* criterion recall (0.9968→0.9982) and sharply raised kNN PID
+   purity (0.918→0.987), with effective rank 7.8 (nearly all 8 dims used). Only
+   pT reconstruction R² softened (0.807→0.613), the expected cost of fewer
+   regression dimensions. The criterion never needed 16 dims — at 16 the space
+   was under-packed for clustering, and compressing it *sharpens* the library
+   metric. **Recommended library size: 8-D** (still ≥ the 5 inputs, but no longer
+   inflated). Dim 4 is the floor: recall finally cracks (0.980) while purity
+   holds.
+
+Reproduce: `run_stage_a.sh` (weight sweep) + `run_stage_b.sh` (w=2.0, ΔpT 5%,
+dims 8/4) → `eval_library.py`. Figures: `library_pareto.png` (frontier with
+shaded target region), `library_retrieval.png`.
+
 ## Campaign 2 — particle-library tokenizer on Aspen Open Jets (real CMS)
 
 **The user-specified objective:** particles with **same PID, same charge,
