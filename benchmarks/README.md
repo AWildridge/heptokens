@@ -1,5 +1,72 @@
 # Tokenizer benchmarks
 
+## Campaign 5 — continuous (VAE) vs discrete (VQ), ± physics, context-free vs -aware
+
+**The question.** A clean 2×2×2 on one bits axis: bottleneck {continuous **VAE**,
+discrete **VQ** RVQ 3×1024}, objective {reconstruction-only, **+ physics-contrastive
+term on the latent**}, encoder {context-free **MLP**, context-aware **attention**}.
+Everything else matched (same `ParticleEncoder`/`ParticleDecoder`, AOJ, 20 epochs).
+VAE rate = KL/ln2 bits (the ELBO rate; naive fp16 size is dim·16); VQ rate =
+num_quantizers·log₂(codebook).
+
+| artifact | bits | recall@8 ↑ | dpt5 | kNN purity | pT R² | eff. rank | note |
+|---|---|---|---|---|---|---|---|
+| *context-free (MLP)* | | | | | | | |
+| VAE dim2 (recon) | 2.7 | 0.033 | 0.041 | 0.996 | 0.194 | 2.0 | recon → species, not criterion |
+| VAE dim4 (recon) | 2.6 | 0.383 | 0.527 | 0.996 | 0.836 | 2.0 | 0.996 purity, 0.38 recall |
+| VAE dim6 (recon) | 2.5 | 0.629 | 0.770 | 0.997 | 0.491 | 2.0 | |
+| **VAE dim4 + kernel** | **1.4** | **0.916** | 0.924 | 0.995 | 0.665 | 3.8 | kernel installs the criterion |
+| VAE dim4 + supcon | 1.6 | 0.774 | 0.848 | 0.996 | 0.437 | 3.2 | hard-CLR variant |
+| **plain VQ 3×1024** | 30 | **0.945** | 0.966 | 0.997 | **0.970** | 6.3 | all-around champion |
+| contrastive-VQ (kernel→z_e) | 30 | 0.827 | 0.845 | 0.899 | 0.331 | 15.8 | kernel **hurts** VQ again |
+| VQ single 8192 | 13 | 0.028 | 0.026 | 0.996 | 0.821 | 8.3 | collapsed (iter-4) |
+| *context-aware (attention)* | | | | | | | |
+| VAE dim4 (recon) | 2.6 | 0.051 | 0.052 | 0.995 | 0.479 | 2.0 | context **wrecks** the criterion |
+| VAE dim4 + kernel | 3.0 | 0.859 | 0.868 | 0.996 | 0.809 | 3.7 | kernel partly rescues |
+| plain VQ 3×1024 | 30 | **0.967** | 0.979 | 0.996 | 0.967 | 4.9 | context slightly **helps** VQ |
+| contrastive-VQ (kernel→z_e) | 30 | 0.816 | 0.831 | 0.880 | 0.498 | 15.5 | |
+| *references* | | | | | | | |
+| raw kinematics | 48 | 0.300 | 0.401 | 0.296 | 0.949 | 3.0 | scaled pt,η,φ only |
+| null (PID one-hot + kin) | 192 | 0.983 | 0.986 | 0.994 | 0.949 | 5.1 | untrained |
+| library (continuous kernel, dim16) | 256 | 0.999 | 0.999 | 0.909 | 0.175 | 15.8 | Campaign 2 |
+
+**Findings**
+
+1. **The contrastive term belongs on the continuous latent, not the codebook —
+   placement is decisive.** On the VAE (smooth mean μ) the physics kernel lifts
+   criterion recall **0.383 → 0.916**; on the VQ (straight-through + EMA codebook)
+   the *same* kernel **drops** it **0.945 → 0.827** and pT R² 0.970 → 0.331. Same
+   term, opposite sign — exactly the gradient-path prediction, and it re-confirms
+   iteration-4's VQ negative at the new 30-bit rate. The clean-gradient continuous
+   quadrant is where physics-shaping works.
+2. **Reconstruction buys species; the criterion needs the kernel.** The recon-only
+   VAE has 0.996 kNN PID purity and 1.00 PID/charge linear probe yet only **0.383**
+   criterion recall — because the criterion also demands ΔpT ≤ 10% and same region,
+   which reconstruction never imposes. kNN purity is a misleading proxy; recall@8 is
+   the real test, and only the contrastive term installs it.
+3. **Rate–distortion: VQ (30 bits) is the all-around champion; the contrastive VAE
+   reaches criterion parity at ~1.4 bits.** Plain VQ wins every axis at 30 bits
+   (recall 0.945, pT R² 0.970, near-perfect recon 0.029). The contrastive VAE hits
+   recall 0.916 at **1.4 bits** (~20× fewer, by the KL rate) — but is
+   non-reconstructive and weaker on pT (R² 0.665). Faithful + criterion → VQ;
+   extreme compression + criterion geometry → contrastive VAE.
+4. **Context is a real, asymmetric tradeoff — not a free upgrade.** Attention
+   slightly *helps* the high-bit VQ (recall 0.945 → 0.967) but *wrecks* the low-bit
+   recon-only VAE (0.383 → **0.051**): a context-aware token folds jet environment
+   into the per-particle code, and at low rate that crowds out the criterion — the
+   universal-vocabulary property breaking, made vivid. The kernel partly rescues the
+   attention VAE (0.859). Only the high-rate discrete token affords both.
+5. **Granularity beats bit-count, again.** RVQ 3×1024 (util 0.09/1.0/0.99) is
+   healthy; the single 8192 codebook still collapses (recall 0.028).
+
+**The honest tradeoff.** No token is at once sub-raw, reconstructive, *and*
+criterion-perfect. Discrete VQ (30 bits) is faithful and criterion-strong but not
+the smallest; the contrastive VAE is extraordinarily compact (~1.4 bits) and
+criterion-strong but lossy; context buys jet information at the cost of the
+per-particle criterion. See `library_rate.png` (all points on one bits axis).
+
+Reproduce: `run_campaign5.sh` → `eval_library.py`.
+
 ## Campaign 4 — compressive tokens: criterion-shaped VQ, low-dim, capacity
 
 **The question.** The continuous library token is *anti-compressive*: a raw

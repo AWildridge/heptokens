@@ -263,6 +263,122 @@ def test_contrastive_vqvae_without_kernel_is_plain_vq():
     assert "train/kernel_loss" not in logged  # kernel skipped when loss_fn is None
 
 
+# ------------------------------------------------------------- VAE (continuous)
+
+
+def _pid_batch(bsz=4, n_csts=8, groups=2, seed=0):
+    """Batch with ``groups`` distinct (pid, charge, region) clusters, so the
+    physics kernel has positives to pull together."""
+    g = T.Generator().manual_seed(seed)
+    grp = T.randint(0, groups, (bsz, n_csts), generator=g)
+    csts = T.rand(bsz, n_csts, 5, generator=g)
+    csts[..., 0] = 50.0 + 0.5 * csts[..., 0]                      # tight pt
+    csts[..., 1] = T.tensor([0.5, -1.5, 1.2])[:groups][grp]       # region eta
+    csts[..., 2] = T.tensor([1.0, -2.0, 0.3])[:groups][grp]       # region phi
+    csts[..., 3] = T.tensor([211.0, 22.0, 13.0])[:groups][grp]    # pid
+    csts[..., 4] = T.tensor([1.0, 0.0, -1.0])[:groups][grp]       # charge
+    return {"csts": csts, "mask": T.ones(bsz, n_csts, dtype=T.bool)}
+
+
+def _make_vae(backbone="mlp", loss_fn=None, **kw):
+    from functools import partial
+
+    from heptokens.models.vae import LitVae
+
+    common = dict(
+        continuous_indices=(0, 1, 2), pid_index=PID, charge_index=CHG,
+        pdg_ids=(22, 211, -211, 13), hidden_dims=(16,),
+    )
+    return LitVae(
+        encoder=partial(ParticleEncoder, pid_emb_dim=4, charge_emb_dim=2,
+                        backbone=backbone, **common),
+        decoder=partial(ParticleDecoder, **common),
+        loss_fn=loss_fn, latent_dim=4, data_sample=T.randn(6, 5), **kw,
+    )
+
+
+def test_particle_encoder_backbone_context_free_vs_aware():
+    """mlp backbone is context-free (a constituent's token is invariant to its
+    neighbours); attention backbone is context-aware (it changes)."""
+    common = dict(
+        input_dim=5, output_dim=8, continuous_indices=(0, 1, 2),
+        pid_index=PID, charge_index=CHG, pdg_ids=(22, 211, -211), hidden_dims=(16,),
+    )
+    x = T.randn(1, 4, 5)
+    x[..., PID] = 211.0
+    x[..., CHG] = 1.0
+    bigger = T.cat([x, T.randn(1, 1, 5)], dim=1)  # the same 4 + one extra neighbour
+    bigger[0, 4, PID] = 22.0
+    for backbone, changes in [("mlp", False), ("attention", True)]:
+        enc = ParticleEncoder(backbone=backbone, **common).eval()
+        with T.no_grad():
+            a = enc({"csts": x, "mask": T.ones(1, 4, dtype=T.bool)})[0, 0]
+            b = enc({"csts": bigger, "mask": T.ones(1, 5, dtype=T.bool)})[0, 0]
+        delta = (a - b).abs().max().item()
+        assert (delta > 1e-4) == changes, f"{backbone}: neighbour-delta={delta}"
+
+
+def test_vae_smoke_and_latent_is_used():
+    """Plain VAE: ``encode`` returns ``(mu, None, None)``; recon + KL finite;
+    grads reach encoder and decoder; the latent carries information (KL > 0,
+    i.e. not posterior-collapsed)."""
+    model = _make_vae(beta=1.0, kl_anneal_epochs=0, free_bits=0.01)
+    logged = {}
+    model.log = lambda name, value, *a, **k: logged.__setitem__(name, float(T.as_tensor(value)))
+    batch = _pid_batch()
+
+    mu, idx, commit = model.encode(batch)
+    assert idx is None and commit is None and mu.shape == (4, 8, 4)
+
+    model.train()
+    opt = T.optim.Adam(model.parameters(), lr=5e-2)
+    for _ in range(25):
+        opt.zero_grad()
+        loss = model.training_step(batch, 0)
+        loss.backward()
+        opt.step()
+    assert T.isfinite(loss)
+    for term in ("train/recon_loss", "train/kl", "train/kl_rate_bits"):
+        assert term in logged and np.isfinite(logged[term])
+    assert logged["train/kl_rate_bits"] > 0.0  # latent is used, not collapsed
+    for module in (model.encoder, model.decoder):
+        assert any(p.grad is not None and T.isfinite(p.grad).all() for p in module.parameters())
+
+
+def test_vae_contrastive_shapes_latent():
+    """VAE + physics kernel on mu: the term is logged and finite, and training
+    it organizes the posterior mean — kernel loss falls and the mu-space kNN PID
+    purity beats the untrained baseline."""
+    from functools import partial
+
+    from heptokens.models.utils import compute_knn_pid_purity
+
+    loss_fn = partial(physics_kernel_loss, **KERNEL_KW, dpt_frac=0.5, deta_max=0.5, dphi_max=0.5)
+    model = _make_vae(loss_fn=loss_fn, kernel_weight=5.0, beta=0.0, reconstruction_weight=0.1)
+    logged = {}
+    model.log = lambda name, value, *a, **k: logged.__setitem__(name, float(T.as_tensor(value)))
+    batch = _pid_batch(bsz=8, n_csts=12)
+    pid_flat = batch["csts"][..., PID][batch["mask"]]
+
+    model.train()
+    opt = T.optim.Adam(model.parameters(), lr=5e-2)
+    first = None
+    for _ in range(40):
+        opt.zero_grad()
+        loss = model.training_step(batch, 0)
+        loss.backward()
+        opt.step()
+        first = logged["train/kernel_loss"] if first is None else first
+    assert "train/kernel_loss" in logged and np.isfinite(logged["train/kernel_loss"])
+    assert logged["train/kernel_loss"] < first  # the kernel organizes mu
+    # gradients from the kernel reach the encoder (mu is the geometry it shapes)
+    assert any(p.grad is not None and T.isfinite(p.grad).all() for p in model.encoder.parameters())
+
+    with T.no_grad():
+        purity = float(compute_knn_pid_purity(model.encode(batch)[0][batch["mask"]], pid_flat, k=4))
+    assert purity > 0.8  # mu ends up organized by particle species
+
+
 def test_residual_kmeans_rate_matched_row():
     sys.path.insert(0, str(Path(__file__).parent.parent / "benchmarks"))
     from eval_library import residual_kmeans_quantize

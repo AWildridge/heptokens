@@ -208,6 +208,34 @@ AOJ, 15 epochs (full table in `benchmarks/README.md` §Campaign 4):
   recall; criterion-preserving compression (continuous dim-6, 96 bits) sits at
   ~2× the raw particle. Nothing tried is both sub-raw *and* criterion-perfect.
 
+## 7e. VAE vs VQ, ± physics, context-free vs -aware (campaign 5)
+
+A 2×2×2 on one bits axis — bottleneck {continuous **VAE**, discrete **VQ** 3×1024},
+objective {reconstruction-only, **+ physics term on the latent**}, encoder
+{context-free **MLP**, context-aware **attention**}; matched coders, AOJ, 20 epochs.
+VAE rate = KL/ln2 bits (full table in `benchmarks/README.md` §Campaign 5):
+
+- **Placement is decisive.** The physics kernel on the VAE's smooth posterior mean
+  lifts criterion recall **0.383 → 0.916**; the *same* kernel on the VQ codebook
+  (straight-through + EMA) **drops** it 0.945 → 0.827 (pT R² 0.970 → 0.331). The
+  continuous latent is the clean-gradient home for the criterion; the codebook is
+  not — the iteration-4 negative, reconfirmed at 30 bits.
+- **Reconstruction buys species, not the criterion.** Recon-only VAE: 0.996 kNN PID
+  purity and 1.00 PID/charge probe, yet 0.383 recall — the criterion also needs
+  ΔpT/region, which reconstruction never imposes. kNN purity is a misleading proxy;
+  recall@8 is the test, and only the contrastive term installs it.
+- **Rate–distortion.** Plain VQ (30 bits) is the all-around champion (recall 0.945,
+  pT R² 0.970, near-perfect recon); the contrastive VAE reaches recall **0.916 at
+  ~1.4 bits** (~20× fewer) but lossy (pT R² 0.665). Faithful → VQ; extreme
+  compression + criterion geometry → contrastive VAE. This is the first token that
+  is *both* sub-raw and criterion-strong (answering §7d's open question), at the
+  cost of reconstruction — no decoupling channel needed.
+- **Context is an asymmetric tradeoff.** Attention slightly *helps* the high-bit VQ
+  (0.945 → 0.967) but *wrecks* the low-bit recon-only VAE (0.383 → **0.051**): a
+  context-aware token folds jet environment into the per-particle code and, at low
+  rate, crowds out the criterion — the universal-vocabulary property breaking. Only
+  the high-rate discrete token affords both context and criterion.
+
 ## 8. Roadmap
 
 1. **Iteration 3 — done (frontier, not corner).** The hybrid objective delivers a
@@ -219,6 +247,13 @@ AOJ, 15 epochs (full table in `benchmarks/README.md` §Campaign 4):
    encoder can be halved to width 64. Open question — a token that is *both*
    sub-raw *and* criterion-perfect: pursue decoupling (dim-6 library ⊕ an explicit
    scaled-kinematics channel) rather than a VQ bottleneck, or accept the tradeoff.
+3. **Campaign 5 — done (placement + rate, not architecture).** The physics term
+   belongs on the **continuous** latent (VAE recall 0.38 → 0.92), not the VQ
+   codebook (0.95 → 0.83); reconstruction yields species but not the criterion;
+   plain VQ (30 bits) is the faithful all-rounder, while the **contrastive VAE
+   reaches criterion parity at ~1.4 bits** — the sub-raw *and* criterion-strong
+   token §7d asked for (lossy, no decoupling needed). Context (attention) buys jet
+   information but breaks the low-rate per-particle criterion (VAE 0.38 → 0.05).
 2. **Release contract:** version tokens (dim, preprocessing hash, checkpoint
    id) via `export_latents.py`; post-hoc compression (fp16 / PQ).
 3. **Cross-experiment:** mixed CMS + second-detector batches under the same

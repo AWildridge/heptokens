@@ -40,9 +40,10 @@ from heptokens.data.augmentations import ConstituentAugmentation
 from heptokens.models.coders import Decoder, Encoder
 from heptokens.models.contrastive import LitContrastiveTokenizer
 from heptokens.models.contrastive_vqvae import LitContrastiveVqVae
-from heptokens.models.losses import physics_kernel_loss
+from heptokens.models.losses import physics_kernel_loss, supcon_physics_loss
 from heptokens.models.particle_encoder import ParticleDecoder, ParticleEncoder
 from heptokens.models.utils import warmup_cosine_scheduler
+from heptokens.models.vae import LitVae
 from heptokens.models.vq_vae import LitVqVae
 
 
@@ -78,6 +79,7 @@ def build_library(
     dpt_frac=None,
     latent_dim=LATENT_DIM,
     hidden_dims=(128, 128, 64),
+    encoder_backbone="mlp",
 ):
     """Particle-library tokenizer (context-free MLP + graded physics kernel).
 
@@ -98,6 +100,7 @@ def build_library(
         pid_emb_dim=8,
         charge_emb_dim=2,
         hidden_dims=hidden_dims,
+        backbone=encoder_backbone,
     )
     if hard_windows:
         from heptokens.models.losses import supcon_physics_loss
@@ -157,7 +160,8 @@ def build_vqvae(data_sample):
 
 
 def build_vqvae_particle(
-    data_sample, codebook_size=512, num_quantizers=3, hidden_dims=(128, 128, 64)
+    data_sample, codebook_size=512, num_quantizers=3, hidden_dims=(128, 128, 64),
+    encoder_backbone="mlp",
 ):
     """Apples-to-apples VQ baseline: the library's exact ParticleEncoder, a
     residual-VQ bottleneck (default 3 x 512 = 27 bits/particle), and a
@@ -174,6 +178,7 @@ def build_vqvae_particle(
             pid_emb_dim=8,
             charge_emb_dim=2,
             hidden_dims=hidden_dims,
+            backbone=encoder_backbone,
         ),
         decoder=partial(
             ParticleDecoder,
@@ -191,6 +196,37 @@ def build_vqvae_particle(
     )
 
 
+def _physics_loss(data, loss="kernel", region="coords", dpt_frac=None):
+    """Physics-contrastive loss partial: graded ``kernel`` (default) or
+    hard-positive ``supcon`` (the CLR-style term). Signature ``(z, feats) ->
+    (loss, comps)``; PID/charge gates disabled on datasets without those
+    columns (jets5c)."""
+    has_pid = data == "aoj"
+    criterion = dict(LIBRARY_CRITERION)
+    if dpt_frac is not None:
+        criterion["dpt_frac"] = dpt_frac
+    if loss == "supcon":
+        return partial(
+            supcon_physics_loss,
+            pid_index=3 if has_pid else None,
+            charge_index=4 if has_pid else None,
+            pt_index=0, eta_index=1, phi_index=2,
+            dpt_frac=criterion["dpt_frac"],
+            deta_max=criterion["deta_max"],
+            dphi_max=criterion["dphi_max"],
+            max_points=4096,
+        )
+    return partial(
+        physics_kernel_loss,
+        pid_index=3 if has_pid else None,
+        charge_index=4 if has_pid else None,
+        region=region,
+        dr_max=0.1,
+        max_points=4096,
+        **criterion,
+    )
+
+
 def build_contrastive_vqvae(
     data_sample,
     data,
@@ -201,6 +237,8 @@ def build_contrastive_vqvae(
     codebook_size=512,
     num_quantizers=3,
     hidden_dims=(128, 128, 64),
+    loss="kernel",
+    encoder_backbone="mlp",
 ):
     """Contrastive-VQ: the same ParticleEncoder + residual-VQ + full-particle
     reconstruction as ``build_vqvae_particle``, plus the graded physics kernel
@@ -208,18 +246,7 @@ def build_contrastive_vqvae(
     library criterion. Matched to the plain VQ at the same rate; only the kernel
     term differs, isolating the value of criterion-shaping the codebook."""
     has_pid = data == "aoj"
-    criterion = dict(LIBRARY_CRITERION)
-    if dpt_frac is not None:
-        criterion["dpt_frac"] = dpt_frac
-    loss_fn = partial(
-        physics_kernel_loss,
-        pid_index=3 if has_pid else None,
-        charge_index=4 if has_pid else None,
-        region=region,
-        dr_max=0.1,
-        max_points=4096,
-        **criterion,
-    )
+    loss_fn = _physics_loss(data, loss=loss, region=region, dpt_frac=dpt_frac)
     return LitContrastiveVqVae(
         encoder=partial(
             ParticleEncoder,
@@ -229,6 +256,7 @@ def build_contrastive_vqvae(
             pid_emb_dim=8,
             charge_emb_dim=2,
             hidden_dims=hidden_dims,
+            backbone=encoder_backbone,
         ),
         decoder=partial(
             ParticleDecoder,
@@ -249,12 +277,68 @@ def build_contrastive_vqvae(
     )
 
 
+def build_vae(
+    data_sample,
+    data,
+    latent_dim=4,
+    beta=1.0,
+    kl_anneal_epochs=5,
+    contrastive=False,
+    loss="kernel",
+    kernel_weight=1.0,
+    region="coords",
+    dpt_frac=None,
+    hidden_dims=(128, 128, 64),
+    encoder_backbone="mlp",
+):
+    """Continuous VAE tokenizer: ParticleEncoder -> N(mu, sigma) -> ParticleDecoder.
+
+    The released token is the posterior mean mu; the logged KL-rate is the
+    principled bits/particle (vs the naive fp16 size ``latent_dim*16``). With
+    ``contrastive=True`` the physics term (graded ``kernel`` or hard-positive
+    ``supcon``) shapes mu directly — the clean-gradient continuous quadrant.
+    ``encoder_backbone`` selects context-free MLP vs context-aware attention."""
+    has_pid = data == "aoj"
+    loss_fn = (
+        _physics_loss(data, loss=loss, region=region, dpt_frac=dpt_frac)
+        if contrastive
+        else None
+    )
+    return LitVae(
+        encoder=partial(
+            ParticleEncoder,
+            continuous_indices=(0, 1, 2),
+            pid_index=3 if has_pid else None,
+            charge_index=4 if has_pid else None,
+            pid_emb_dim=8,
+            charge_emb_dim=2,
+            hidden_dims=hidden_dims,
+            backbone=encoder_backbone,
+        ),
+        decoder=partial(
+            ParticleDecoder,
+            continuous_indices=(0, 1, 2),
+            pid_index=3 if has_pid else None,
+            charge_index=4 if has_pid else None,
+            hidden_dims=hidden_dims,
+        ),
+        latent_dim=latent_dim,
+        beta=beta,
+        kl_anneal_epochs=kl_anneal_epochs,
+        loss_fn=loss_fn,
+        kernel_weight=kernel_weight,
+        learning_rate=1e-3,
+        scheduler=partial(warmup_cosine_scheduler, warmup_epochs=3),
+        data_sample=data_sample,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--model",
         choices=["library", "hybrid", "contrastive", "vqvae",
-                 "vqvae_particle", "contrastive_vqvae"],
+                 "vqvae_particle", "contrastive_vqvae", "vae"],
         required=True,
     )
     parser.add_argument("--data", choices=["jets5c", "aoj"], default="jets5c")
@@ -276,6 +360,16 @@ def main() -> None:
                         help="VQ residual-quantizer stages (default 3)")
     parser.add_argument("--hidden-dims", default=None,
                         help="encoder MLP widths, comma-separated (default 128,128,64)")
+    parser.add_argument("--encoder", choices=["mlp", "attention"], default="mlp",
+                        help="particle encoder backbone: context-free MLP or context-aware attention")
+    parser.add_argument("--beta", type=float, default=1.0,
+                        help="vae only: KL weight (beta-VAE)")
+    parser.add_argument("--kl-anneal-epochs", type=int, default=5,
+                        help="vae only: linear KL warmup length in epochs")
+    parser.add_argument("--contrastive", action="store_true",
+                        help="vae only: add the physics-contrastive term on mu")
+    parser.add_argument("--loss", choices=["kernel", "supcon"], default="kernel",
+                        help="physics term (vae/contrastive_vqvae): graded kernel or hard-positive supcon (CLR)")
     parser.add_argument("--run-name", default=None, help="override output dir name")
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--epochs", type=int, default=20)
@@ -315,6 +409,7 @@ def main() -> None:
             dpt_frac=args.dpt_frac,
             latent_dim=args.latent_dim or LATENT_DIM,
             hidden_dims=hidden_dims,
+            encoder_backbone=args.encoder,
         )
         monitor_cb = ContrastiveMonitor(
             max_batches=4, pid_index=3 if args.data == "aoj" else None
@@ -330,6 +425,26 @@ def main() -> None:
             codebook_size=args.codebook_size,
             num_quantizers=args.num_quantizers,
             hidden_dims=hidden_dims,
+            loss=args.loss,
+            encoder_backbone=args.encoder,
+        )
+        monitor_cb = ContrastiveMonitor(
+            max_batches=4, pid_index=3 if args.data == "aoj" else None
+        )
+    elif args.model == "vae":
+        model = build_vae(
+            data_sample,
+            args.data,
+            latent_dim=args.latent_dim or 4,
+            beta=args.beta,
+            kl_anneal_epochs=args.kl_anneal_epochs,
+            contrastive=args.contrastive,
+            loss=args.loss,
+            kernel_weight=args.kernel_weight,
+            region=args.region,
+            dpt_frac=args.dpt_frac,
+            hidden_dims=hidden_dims,
+            encoder_backbone=args.encoder,
         )
         monitor_cb = ContrastiveMonitor(
             max_batches=4, pid_index=3 if args.data == "aoj" else None
@@ -343,6 +458,7 @@ def main() -> None:
             codebook_size=args.codebook_size,
             num_quantizers=args.num_quantizers,
             hidden_dims=hidden_dims,
+            encoder_backbone=args.encoder,
         )
         monitor_cb = BaseReconstructionMonitor(max_batches=4)
     else:

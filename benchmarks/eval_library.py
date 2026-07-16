@@ -38,6 +38,7 @@ from heptokens.models.utils import (
     compute_knn_pid_purity,
     compute_retrieval_precision,
 )
+from heptokens.models.vae import LitVae
 from heptokens.models.vq_vae import LitVqVae
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -141,6 +142,22 @@ def embedding_providers(raw, scaled, mask):
         )
         return torch.cat(zqs), util
 
+    def vae_encode(model, csts, chunk=256):
+        """Chunked VAE encode -> (posterior mean mu on valid constituents,
+        measured KL-rate in bits/particle = KL_nats / ln2). Jet-chunked, which
+        is exact for the attention backbone (attention is intra-jet)."""
+        mus, kls = [], []
+        for s in range(0, csts.shape[0], chunk):
+            msl = mask[s:s + chunk]
+            batch = {"csts": csts[s:s + chunk].to(DEVICE), "mask": msl.to(DEVICE)}
+            mu, log_std = model.encode_stats(batch)
+            m = msl.to(mu.device)
+            mus.append(mu[m].cpu())
+            kl = 0.5 * (mu[m].pow(2) + (2 * log_std[m]).exp() - 1 - 2 * log_std[m]).sum(-1)
+            kls.append(kl.cpu())
+        kl_bits = float(torch.cat(kls).mean() / np.log(2))
+        return torch.cat(mus), kl_bits
+
     # Library arm + seed variants, and its ablations.
     for provider, run in seed_runs("library_aoj"):
         model = load_tokenizer(run)
@@ -190,6 +207,25 @@ def embedding_providers(raw, scaled, mask):
         model = load_tokenizer(d.name)
         if model is not None:
             out[d.name.replace("_aoj", "")] = encode_with(model, scaled)
+
+    # --- Campaign 5: continuous(VAE) vs discrete(VQ), +-physics, context-free
+    #     vs context-aware. Names: c5_vae* / c5_vaeK* (VAE, recon / +physics),
+    #     c5_vqp* / c5_cvq* (plain VQ / contrastive-VQ, RVQ 3x1024 = 30 bits);
+    #     an "_attn" suffix marks the context-aware attention encoder.
+    for d in sorted(TOKENIZER_DIR.glob("c5_vae*")):
+        model = load_tokenizer(d.name, cls=LitVae)
+        if model is not None:
+            name = d.name.replace("_aoj", "")
+            out[name], kl_bits = vae_encode(model, scaled)
+            extras[name] = {"kl_rate_bits": round(kl_bits, 3),
+                            "bits_fp16": int(out[name].shape[-1]) * 16}
+    for pat, cls in [("c5_vqp*", LitVqVae), ("c5_cvq*", LitContrastiveVqVae)]:
+        for d in sorted(TOKENIZER_DIR.glob(pat)):
+            model = load_tokenizer(d.name, cls=cls)
+            if model is not None:
+                name = d.name.replace("_aoj", "")
+                out[name], util = vq_encode(model, scaled)
+                extras[name] = {f"codebook_util_q{q}": float(v) for q, v in enumerate(util)}
 
     # Rate-matched library row: post-hoc RVQ at 27 bits/particle.
     if "library" in out:
@@ -384,6 +420,8 @@ def provider_bits(name: str, dim: int) -> int:
         "library_rvq27", "v1_vqvae"
     ):
         return 27  # 3 x log2(512)
+    if name.startswith(("c5_vqp", "c5_cvq")):
+        return 30  # 3 x log2(1024)
     return dim * 16  # continuous fp16
 
 
@@ -395,8 +433,14 @@ def fig_rate(results):
     particle is marked so anti-compressive tokens (right of it) are visible.
     """
     def family(name):
-        if name.startswith("contrastive_vq"):
+        if name.startswith("c5_vaeK"):
+            return "VAE + physics", "#2f8fd0"
+        if name.startswith("c5_vae"):
+            return "VAE (recon)", "#7fc7ec"
+        if name.startswith("c5_cvq") or name.startswith("contrastive_vq"):
             return "contrastive-VQ", "#8250df"
+        if name.startswith("c5_vqp"):
+            return "plain VQ (c5)", "#eda100"
         if name.startswith("hybrid"):
             return "hybrid (continuous)", "#e34948"
         if name.startswith("vq") or name in ("library_rvq27", "v1_vqvae"):
@@ -415,13 +459,16 @@ def fig_rate(results):
         if bits is None or y is None:
             continue
         label, color = family(name)
-        ax.scatter(bits, y, s=55, color=color, zorder=3,
+        # Triangle marker = context-aware attention encoder (VAE bits = KL-rate).
+        marker = "^" if name.endswith("_attn") else "o"
+        ax.scatter(bits, y, s=55, color=color, marker=marker, zorder=3,
                    label=None if label in seen else label)
         seen.add(label)
         ax.annotate(name, (bits, y), xytext=(5, 3), textcoords="offset points",
                     fontsize=6.6, color=INK2)
+    ax.scatter([], [], marker="^", color=MUTED, label="context-aware (attn)")
     ax.set_xscale("log", base=2)
-    ax.set_xlabel("release rate (bits / particle, log scale)")
+    ax.set_xlabel("release rate (bits / particle, log scale — VAE = KL-rate)")
     ax.set_ylabel("criterion recall@8")
     ax.set_title("Compression curve: does the criterion survive fewer bits?")
     ax.legend(fontsize=8, loc="lower right")
@@ -552,7 +599,9 @@ def main() -> None:
             "effective_rank": float(rank),
             "criterion_density": float(res["criterion_density"]),
             "dim": int(z.shape[-1]),
-            "bits": provider_bits(name, int(z.shape[-1])),
+            "bits": extras.get(name, {}).get(
+                "kl_rate_bits", provider_bits(name, int(z.shape[-1]))
+            ),
             **extras.get(name, {}),
         }
         print(f"[{name:18s}] " + json.dumps(results[name]))

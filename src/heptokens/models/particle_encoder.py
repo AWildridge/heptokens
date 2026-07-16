@@ -20,6 +20,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from heptokens.models.coders import BaseDecoder, BaseEncoder, CoderModel
+from heptokens.models.transformer import Transformer
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +50,15 @@ class ParticleEncoder(BaseEncoder):
         charge_index: Column holding charge in {-1, 0, +1} — ``None`` disables.
         pdg_ids: Known PDG codes; unknown codes map to an "other" bucket.
         pid_emb_dim / charge_emb_dim: Embedding widths.
-        hidden_dims: MLP hidden layers (``CoderModel``).
+        hidden_dims: MLP hidden layers (``CoderModel``), used when
+            ``backbone="mlp"``.
+        backbone: ``"mlp"`` (context-free per-particle ``CoderModel`` — the
+            same (PID, charge, kinematics) always maps to the same token) or
+            ``"attention"`` (a ``Transformer`` over the jet's constituents,
+            so a constituent's token depends on the rest of the jet —
+            context-aware, richer but no longer a universal per-particle map).
+        attn_layers / d_model / n_heads: Transformer config for
+            ``backbone="attention"``.
     """
 
     def __init__(
@@ -63,6 +72,10 @@ class ParticleEncoder(BaseEncoder):
         pid_emb_dim: int = 8,
         charge_emb_dim: int = 2,
         hidden_dims: tuple[int, ...] = (128, 128, 64),
+        backbone: str = "mlp",
+        attn_layers: int = 3,
+        d_model: int = 128,
+        n_heads: int = 4,
         input_key: str = "csts",
         mask_key: str = "mask",
     ):
@@ -92,9 +105,26 @@ class ParticleEncoder(BaseEncoder):
             self.charge_embedding = nn.Embedding(3, charge_emb_dim)
             fused_dim += charge_emb_dim
 
-        self.coder = CoderModel(
-            input_dim=fused_dim, output_dim=output_dim, hidden_dims=list(hidden_dims)
-        )
+        if backbone == "mlp":
+            # Context-free: each constituent is embedded independently.
+            self.coder = CoderModel(
+                input_dim=fused_dim, output_dim=output_dim, hidden_dims=list(hidden_dims)
+            )
+        elif backbone == "attention":
+            # Context-aware: attention over the jet's constituents. Same
+            # ``(x, mask)`` call as CoderModel, so ``forward`` is unchanged —
+            # but a constituent's token now depends on the rest of the jet.
+            self.coder = Transformer(
+                input_dim=fused_dim,
+                output_dim=output_dim,
+                d_model=d_model,
+                n_heads=n_heads,
+                num_layers=attn_layers,
+                dim_feedforward=2 * d_model,
+            )
+        else:
+            raise ValueError(f"backbone must be 'mlp' or 'attention', got {backbone!r}")
+        self.backbone = backbone
 
     def _map_pid(self, pid: torch.Tensor) -> torch.Tensor:
         """Map raw PDG codes to contiguous ids; unknown -> the 'other' bucket."""
