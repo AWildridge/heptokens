@@ -67,6 +67,9 @@ class LitContrastiveTokenizer(ScheduledOptimiserMixin, LightningModule):
         use_projector: bool = True,
         decoder=None,
         recon_weight: float = 0.0,
+        contrastive_weight: float = 1.0,
+        fsq_levels: Tuple[int, ...] = None,
+        fsq_kernel_on: str = "z_e",
         data_sample: torch.Tensor = None,
         input_dim: int | None = None,
         **kwargs,
@@ -100,6 +103,25 @@ class LitContrastiveTokenizer(ScheduledOptimiserMixin, LightningModule):
             encoder = Encoder
         self.encoder = encoder(input_dim=input_dim, output_dim=latent_dim)
 
+        # Optional FSQ bottleneck (codebook-free discrete token): the released
+        # token becomes the rounded grid point z_q; the physics term is applied
+        # to the smooth bounded latent z_e (default) or to z_q via the STE.
+        self.fsq = None
+        self.fsq_kernel_on = fsq_kernel_on
+        self.contrastive_weight = contrastive_weight
+        if fsq_levels is not None:
+            from heptokens.models.fsq import FSQ
+
+            if len(fsq_levels) != latent_dim:
+                raise ValueError(
+                    f"len(fsq_levels)={len(fsq_levels)} must equal latent_dim={latent_dim}"
+                )
+            if loss_inputs != "features":
+                raise ValueError("The FSQ bottleneck supports only loss_inputs='features'.")
+            if fsq_kernel_on not in ("z_e", "z_q"):
+                raise ValueError(f"Unknown fsq_kernel_on: {fsq_kernel_on!r}")
+            self.fsq = FSQ(fsq_levels)
+
         # Optional hybrid objective: a decoder adds a reconstruction term so
         # the token preserves particle information alongside the metric the
         # contrastive loss shapes (kernel organizes, reconstruction retains).
@@ -125,9 +147,12 @@ class LitContrastiveTokenizer(ScheduledOptimiserMixin, LightningModule):
         Returns ``(z, None, None)`` with ``z`` of shape
         ``[batch, n_csts, latent_dim]`` — same tuple convention as
         ``LitVqVae.encode`` so monitors and tokenizer transforms can call
-        ``encode(batch)[0]`` on either model.
+        ``encode(batch)[0]`` on either model. With an FSQ bottleneck the
+        released token is the quantized grid point.
         """
         z = self.encoder(batch)
+        if self.fsq is not None:
+            z = self.fsq(z)[0]
         return z, None, None
 
     def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
@@ -170,10 +195,16 @@ class LitContrastiveTokenizer(ScheduledOptimiserMixin, LightningModule):
         mask = batch.get(self.mask_key)
         feats = batch.get(self.raw_key, batch[self.input_key])
 
+        z_token, z_kernel = z, z
+        if self.fsq is not None:
+            z_q, z_e = self.fsq(z)
+            z_token = z_q
+            z_kernel = z_e if self.fsq_kernel_on == "z_e" else z_q
+
         if mask is not None:
-            z_flat, f_flat = z[mask], feats[mask]
+            z_flat, f_flat = z_kernel[mask], feats[mask]
         else:
-            z_flat = z.reshape(-1, z.shape[-1])
+            z_flat = z_kernel.reshape(-1, z_kernel.shape[-1])
             f_flat = feats.reshape(-1, feats.shape[-1])
 
         if z_flat.shape[0] < 3:
@@ -183,9 +214,13 @@ class LitContrastiveTokenizer(ScheduledOptimiserMixin, LightningModule):
         if self.use_projector:
             z_flat = self.projector(z_flat)
 
-        loss, components = self.loss_fn(z_flat, f_flat)
+        if self.contrastive_weight != 0:
+            loss, components = self.loss_fn(z_flat, f_flat)
+            loss = self.contrastive_weight * loss
+        else:
+            loss, components = z_flat.new_zeros(()), {}
         if self.decoder is not None:
-            recon = self.decoder.compute_loss(z, batch)
+            recon = self.decoder.compute_loss(z_token, batch)
             components = {**components, "recon_loss": recon}
             loss = loss + self.recon_weight * recon
         self.log(f"{prefix}/total_loss", loss, prog_bar=True)

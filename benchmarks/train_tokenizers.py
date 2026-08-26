@@ -277,12 +277,71 @@ def build_contrastive_vqvae(
     )
 
 
+def build_fsq(
+    data_sample,
+    data,
+    fsq_levels=(6, 6, 6, 6, 6, 6),
+    fsq_kernel_on="z_e",
+    recon_weight=0.0,
+    contrastive_weight=1.0,
+    loss="kernel",
+    region="coords",
+    dpt_frac=None,
+    hidden_dims=(128, 128, 64),
+    encoder_backbone="mlp",
+):
+    """FSQ-bottleneck library tokenizer (Campaign 6c): the library's context-free
+    ParticleEncoder followed by a codebook-free finite-scalar quantizer — no
+    codebook, no EMA, no commitment loss (the mechanisms behind the C4/C5
+    contrastive-VQ negative). The kernel shapes the smooth pre-rounding latent
+    ``z_e`` by default (``fsq_kernel_on='z_q'`` is the STE ablation); the
+    released token is the grid point ``z_q`` at exactly ``sum(log2(levels))``
+    bits/particle. ``contrastive_weight=0`` + ``recon_weight=1`` gives the
+    recon-only FSQ control (the plain-VQ analog at this bottleneck)."""
+    has_pid = data == "aoj"
+    loss_fn = _physics_loss(data, loss=loss, region=region, dpt_frac=dpt_frac)
+    decoder = None
+    if recon_weight > 0:
+        decoder = partial(
+            ParticleDecoder,
+            continuous_indices=(0, 1, 2),
+            pid_index=3 if has_pid else None,
+            charge_index=4 if has_pid else None,
+            hidden_dims=hidden_dims,
+        )
+    return LitContrastiveTokenizer(
+        encoder=partial(
+            ParticleEncoder,
+            continuous_indices=(0, 1, 2),
+            pid_index=3 if has_pid else None,
+            charge_index=4 if has_pid else None,
+            pid_emb_dim=8,
+            charge_emb_dim=2,
+            hidden_dims=hidden_dims,
+            backbone=encoder_backbone,
+        ),
+        loss_fn=loss_fn,
+        loss_inputs="features",
+        use_projector=False,
+        decoder=decoder,
+        recon_weight=recon_weight,
+        contrastive_weight=contrastive_weight,
+        latent_dim=len(fsq_levels),
+        fsq_levels=tuple(int(x) for x in fsq_levels),
+        fsq_kernel_on=fsq_kernel_on,
+        learning_rate=1e-3,
+        scheduler=partial(warmup_cosine_scheduler, warmup_epochs=3),
+        data_sample=data_sample,
+    )
+
+
 def build_vae(
     data_sample,
     data,
     latent_dim=4,
     beta=1.0,
     kl_anneal_epochs=5,
+    free_bits=0.0,
     contrastive=False,
     loss="kernel",
     kernel_weight=1.0,
@@ -325,6 +384,7 @@ def build_vae(
         latent_dim=latent_dim,
         beta=beta,
         kl_anneal_epochs=kl_anneal_epochs,
+        free_bits=free_bits,
         loss_fn=loss_fn,
         kernel_weight=kernel_weight,
         learning_rate=1e-3,
@@ -338,14 +398,15 @@ def main() -> None:
     parser.add_argument(
         "--model",
         choices=["library", "hybrid", "contrastive", "vqvae",
-                 "vqvae_particle", "contrastive_vqvae", "vae"],
+                 "vqvae_particle", "contrastive_vqvae", "vae", "fsq"],
         required=True,
     )
     parser.add_argument("--data", choices=["jets5c", "aoj"], default="jets5c")
     parser.add_argument("--region", choices=["coords", "cone"], default="coords")
     parser.add_argument("--hard-windows", action="store_true")
-    parser.add_argument("--recon-weight", type=float, default=1.0,
-                        help="hybrid only: weight of the reconstruction term")
+    parser.add_argument("--recon-weight", type=float, default=None,
+                        help="hybrid/fsq: weight of the reconstruction term "
+                             "(default 1.0 for hybrid, 0.0 for fsq)")
     parser.add_argument("--kernel-weight", type=float, default=1.0,
                         help="contrastive_vqvae only: weight of the kernel term")
     parser.add_argument("--kernel-on", choices=["z_q", "z_e"], default="z_q",
@@ -364,8 +425,20 @@ def main() -> None:
                         help="particle encoder backbone: context-free MLP or context-aware attention")
     parser.add_argument("--beta", type=float, default=1.0,
                         help="vae only: KL weight (beta-VAE)")
+    parser.add_argument("--free-bits", type=float, default=0.0,
+                        help="vae only: per-dimension KL floor in nats "
+                             "(posterior-collapse insurance)")
     parser.add_argument("--kl-anneal-epochs", type=int, default=5,
                         help="vae only: linear KL warmup length in epochs")
+    parser.add_argument("--fsq-levels", default="6,6,6,6,6,6",
+                        help="fsq only: per-dimension level counts, comma-separated; "
+                             "rate = sum(log2(levels)) bits/particle")
+    parser.add_argument("--fsq-kernel-on", choices=["z_e", "z_q"], default="z_e",
+                        help="fsq only: apply the physics kernel to the smooth "
+                             "pre-rounding latent (z_e) or the grid token (z_q, STE)")
+    parser.add_argument("--contrastive-weight", type=float, default=1.0,
+                        help="fsq only: weight of the physics term "
+                             "(0 = recon-only FSQ control)")
     parser.add_argument("--contrastive", action="store_true",
                         help="vae only: add the physics-contrastive term on mu")
     parser.add_argument("--loss", choices=["kernel", "supcon"], default="kernel",
@@ -405,7 +478,10 @@ def main() -> None:
             args.data,
             region=args.region,
             hard_windows=args.hard_windows,
-            recon_weight=args.recon_weight if args.model == "hybrid" else 0.0,
+            recon_weight=(
+                (args.recon_weight if args.recon_weight is not None else 1.0)
+                if args.model == "hybrid" else 0.0
+            ),
             dpt_frac=args.dpt_frac,
             latent_dim=args.latent_dim or LATENT_DIM,
             hidden_dims=hidden_dims,
@@ -431,6 +507,23 @@ def main() -> None:
         monitor_cb = ContrastiveMonitor(
             max_batches=4, pid_index=3 if args.data == "aoj" else None
         )
+    elif args.model == "fsq":
+        model = build_fsq(
+            data_sample,
+            args.data,
+            fsq_levels=tuple(int(x) for x in args.fsq_levels.split(",")),
+            fsq_kernel_on=args.fsq_kernel_on,
+            recon_weight=args.recon_weight if args.recon_weight is not None else 0.0,
+            contrastive_weight=args.contrastive_weight,
+            loss=args.loss,
+            region=args.region,
+            dpt_frac=args.dpt_frac,
+            hidden_dims=hidden_dims,
+            encoder_backbone=args.encoder,
+        )
+        monitor_cb = ContrastiveMonitor(
+            max_batches=4, pid_index=3 if args.data == "aoj" else None
+        )
     elif args.model == "vae":
         model = build_vae(
             data_sample,
@@ -438,6 +531,7 @@ def main() -> None:
             latent_dim=args.latent_dim or 4,
             beta=args.beta,
             kl_anneal_epochs=args.kl_anneal_epochs,
+            free_bits=args.free_bits,
             contrastive=args.contrastive,
             loss=args.loss,
             kernel_weight=args.kernel_weight,

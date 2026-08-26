@@ -46,6 +46,25 @@ CRIT = dict(LIBRARY_CRITERION, pid_index=3, charge_index=4)
 PDG_GROUPS = {211: "pi+-", 22: "gamma", 130: "K_L", 11: "e+-", 13: "mu+-"}
 
 
+def grid_centers(csts, offset=0.0, dpt_frac=0.1, ang=0.1):
+    """Snap raw (pt, eta, phi) to criterion-aligned bin centers (Campaign 6b).
+
+    log-pT bins of width ln(1+dpt_frac) and eta/phi bins of width ``ang`` — the
+    criterion's own scales, so bin-equality approximates the criterion gates.
+    ``offset=0.5`` gives the half-shifted second grid that repairs boundary
+    pairs. PID/charge columns pass through exactly.
+    """
+    import math
+
+    out = csts.clone().float()
+    w = math.log1p(dpt_frac)
+    lp = out[..., 0].clamp(min=1e-3).log()
+    out[..., 0] = ((torch.floor(lp / w - offset) + 0.5 + offset) * w).exp()
+    for j in (1, 2):
+        out[..., j] = (torch.floor(out[..., j] / ang - offset) + 0.5 + offset) * ang
+    return out
+
+
 @torch.no_grad()
 def collect(n_batches=6, batch_size=1024):
     dm = make_datamodule(batch_size=batch_size, num_workers=4, transforms=None, data="aoj")
@@ -53,11 +72,16 @@ def collect(n_batches=6, batch_size=1024):
     preprocess = make_transforms("aoj")["preprocess"]
 
     raws, scaleds, masks = [], [], []
+    binned = {0.0: [], 0.5: []}  # scaled criterion-grid bin centers (6b)
     for i, raw in enumerate(dm.val_dataloader()):
         if i >= n_batches:
             break
         raw_copy = {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in raw.items()}
         scaled = preprocess(copy.deepcopy(raw))
+        for off, lst in binned.items():
+            b = {k: v.clone() if isinstance(v, torch.Tensor) else v for k, v in raw_copy.items()}
+            b["csts"] = grid_centers(b["csts"], offset=off)
+            lst.append(preprocess(b)["csts"])
         raws.append(raw_copy["csts"])
         scaleds.append(scaled["csts"])
         masks.append(raw_copy["mask"])
@@ -65,6 +89,8 @@ def collect(n_batches=6, batch_size=1024):
         torch.cat(raws),
         torch.cat(scaleds),
         torch.cat(masks).bool(),
+        torch.cat(binned[0.0]),
+        torch.cat(binned[0.5]),
     )
 
 
@@ -112,7 +138,7 @@ def residual_kmeans_quantize(z, n_stages=3, k=512, fit_n=200_000, seed=SEED):
 
 
 @torch.no_grad()
-def embedding_providers(raw, scaled, mask):
+def embedding_providers(raw, scaled, mask, binned1=None, binned2=None):
     """Return (providers, extras): flat embeddings on valid constituents plus
     side diagnostics (e.g. VQ codebook utilization)."""
     from heptokens.models.utils import compute_codebook_utilization
@@ -227,6 +253,31 @@ def embedding_providers(raw, scaled, mask):
                 out[name], util = vq_encode(model, scaled)
                 extras[name] = {f"codebook_util_q{q}": float(v) for q, v in enumerate(util)}
 
+    # --- Campaign 6a: rate-matched contrastive-VAE frontier (beta/free-bits
+    #     sweep). Names c6_vae*/c6_vaeK*; bits = measured KL-rate.
+    for d in sorted(TOKENIZER_DIR.glob("c6_vae*")):
+        model = load_tokenizer(d.name, cls=LitVae)
+        if model is not None:
+            name = d.name.replace("_aoj", "")
+            out[name], kl_bits = vae_encode(model, scaled)
+            extras[name] = {"kl_rate_bits": round(kl_bits, 3),
+                            "bits_fp16": int(out[name].shape[-1]) * 16}
+
+    # --- Campaign 6c: FSQ-bottleneck library tokenizer (codebook-free
+    #     discrete). Released token = grid point; exact bits from the levels.
+    for d in sorted(TOKENIZER_DIR.glob("c6_fsq*")):
+        model = load_tokenizer(d.name)
+        if model is not None:
+            name = d.name.replace("_aoj", "")
+            out[name] = encode_with(model, scaled)
+            levels = model.hparams.get("fsq_levels")
+            if levels:
+                extras[name] = {
+                    "bits_exact": round(float(np.sum(np.log2(list(levels)))), 2),
+                    "n_grid_points": int(np.prod(list(levels))),
+                    "n_unique_codes": int(torch.unique(out[name], dim=0).shape[0]),
+                }
+
     # Rate-matched library row: post-hoc RVQ at 27 bits/particle.
     if "library" in out:
         out["library_rvq27"] = residual_kmeans_quantize(out["library"])
@@ -239,6 +290,31 @@ def embedding_providers(raw, scaled, mask):
     out["null_handcrafted"] = torch.cat([scaled[..., :3][mask], onehot, charge], dim=-1)
 
     out["raw_kinematics"] = scaled[..., :3][mask]
+
+    # --- Campaign 6b: criterion-aligned physics grid — UNTRAINED sub-raw
+    #     discrete reference (null analog for the discrete family). Same
+    #     embedding recipe as the null with kinematics snapped to bin centers;
+    #     the double grid concatenates a half-bin-offset copy (boundary repair).
+    #     Bits = sum log2(occupied bins) per dim, computed from the pool.
+    if binned1 is not None:
+        import math
+
+        rf = raw[mask]
+        w = math.log1p(LIBRARY_CRITERION["dpt_frac"])
+        n_pt = len(torch.unique(torch.floor(rf[:, 0].clamp(min=1e-3).log() / w)))
+        n_eta = len(torch.unique(torch.floor(rf[:, 1] / 0.1)))
+        n_phi = len(torch.unique(torch.floor(rf[:, 2] / 0.1)))
+        n_pid = len(torch.unique(rf[:, 3]))
+        n_charge = len(torch.unique(rf[:, 4].round()))
+        bits1 = sum(np.log2(n) for n in (n_pt, n_eta, n_phi, n_pid, n_charge))
+        out["physics_grid"] = torch.cat([binned1[..., :3][mask], onehot, charge], dim=-1)
+        extras["physics_grid"] = {"bits_exact": round(float(bits1), 2)}
+        if binned2 is not None:
+            out["physics_grid2"] = torch.cat(
+                [binned1[..., :3][mask], binned2[..., :3][mask], onehot, charge], dim=-1
+            )
+            # Second-grid index adds ~1 bit per kinematic dim given the first.
+            extras["physics_grid2"] = {"bits_exact": round(float(bits1) + 3.0, 2)}
 
     v1 = load_tokenizer("contrastive")
     if v1 is not None:
@@ -433,9 +509,15 @@ def fig_rate(results):
     particle is marked so anti-compressive tokens (right of it) are visible.
     """
     def family(name):
-        if name.startswith("c5_vaeK"):
+        if name.startswith("c6_fsqK"):
+            return "FSQ + physics (c6)", "#d0592f"
+        if name.startswith("c6_fsq"):
+            return "FSQ (recon)", "#e8a087"
+        if name.startswith("physics_grid"):
+            return "physics grid (untrained)", "#6e6a86"
+        if name.startswith(("c5_vaeK", "c6_vaeK")):
             return "VAE + physics", "#2f8fd0"
-        if name.startswith("c5_vae"):
+        if name.startswith(("c5_vae", "c6_vae")):
             return "VAE (recon)", "#7fc7ec"
         if name.startswith("c5_cvq") or name.startswith("contrastive_vq"):
             return "contrastive-VQ", "#8250df"
@@ -572,11 +654,11 @@ def fig_cliff(curves):
 
 def main() -> None:
     print("[collect] AOJ validation constituents ...")
-    raw, scaled, mask = collect()
+    raw, scaled, mask, binned1, binned2 = collect()
     raw_flat = raw[mask]
     pid_flat = raw_flat[:, 3]
 
-    providers, extras = embedding_providers(raw, scaled, mask)
+    providers, extras = embedding_providers(raw, scaled, mask, binned1, binned2)
     print(f"[providers] {list(providers)}  ({len(raw_flat):,} constituents)")
 
     rng = np.random.default_rng(SEED)
@@ -600,7 +682,10 @@ def main() -> None:
             "criterion_density": float(res["criterion_density"]),
             "dim": int(z.shape[-1]),
             "bits": extras.get(name, {}).get(
-                "kl_rate_bits", provider_bits(name, int(z.shape[-1]))
+                "bits_exact",
+                extras.get(name, {}).get(
+                    "kl_rate_bits", provider_bits(name, int(z.shape[-1]))
+                ),
             ),
             **extras.get(name, {}),
         }
