@@ -28,12 +28,14 @@ _REPO=_P(__file__).resolve().parent.parent
 OUT=str(_REPO/"docs"/"tokenization_slides.pdf")
 plt.rcParams.update({"pdf.fonttype":42,"font.family":SANS})
 
-TOTAL=19
+TOTAL=20
+_SLIDE=[0]
 
 def emit(fig):
     pdf.savefig(fig,facecolor=PAPER); plt.close(fig)
 
-def slide(n, dark_tick=SIGNAL):
+def slide(n=None, dark_tick=SIGNAL):
+    _SLIDE[0]+=1; n=_SLIDE[0]   # slides number themselves in emission order
     fig=plt.figure(figsize=(13.333,7.5), dpi=200, facecolor=PAPER)
     ax=fig.add_axes([0,0,1,1]); ax.set_xlim(0,1); ax.set_ylim(0,1); ax.axis("off")
     ax.add_patch(Rectangle((0,0),1,1,color=PAPER,zorder=-5))
@@ -180,8 +182,67 @@ with PdfPages(OUT) as pdf:
     setup_line(ax,"single A100 MIG slice · torch 2.5.1 · 15-20 epochs per arm · full configs in benchmarks/")
     emit(fig)
 
-    # ---- 5 · metrics -----------------------------------------------------------------
-    fig,ax=slide(5); eyebrow(ax,"2 · methodology")
+    # ---- 5 · metrics intuition (worked example) -----------------------------------------
+    fig,ax=slide(); eyebrow(ax,"2 · methodology")
+    title(ax,"How a token is scored — a worked example")
+    steps=[("1","Pick a particle (the anchor):","a π⁺ with pT = 10 GeV at (η, φ) = (0.5, 1.2)."),
+           ("2","List its true partners, using physics only:","every π⁺ (charge +1) with pT between 9.1–11 GeV,"
+            " within ±0.1 in η and φ. In a 30,000-particle pool, typically only 1–3 such particles exist."),
+           ("3","Now use the tokens:","rank all 30,000 particles by how close their token is to the anchor's"
+            " token (a token is just a short list of numbers; 'close' = nearby point)."),
+           ("4","Score:","of the partners that exist, how many appear in the top 8 of that ranking?")]
+    yy=0.735
+    for n_,h_,s_ in steps:
+        ax.text(0.06,yy,n_,family=MONO,fontsize=13,color=SIGNAL,va="top",fontweight="bold")
+        ax.text(0.095,yy,h_,family=SANS,fontsize=13,color=INK,va="top",fontweight="bold")
+        wrapped=textwrap.fill(s_,width=72)
+        ax.text(0.095,yy-0.035,wrapped,family=SANS,fontsize=12,color=INKS,va="top",linespacing=1.3)
+        yy-=0.048+0.030*(wrapped.count("\n")+1)
+    # schematic: token space with anchor, partners, top-8 neighbourhood
+    # (rect chosen physically square: 0.185*13.333in = 0.329*7.5in)
+    iax=fig.add_axes([0.70,0.41,0.185,0.329]); iax.set_xlim(0,1); iax.set_ylim(0,1)
+    iax.set_xticks([]); iax.set_yticks([])
+    for s in iax.spines.values(): s.set_color(LINE)
+    rng2=np.random.default_rng(11)
+    pts=rng2.random((70,2))
+    iax.scatter(pts[:,0],pts[:,1],s=10,color=FAINT,alpha=0.6,lw=0,zorder=1)
+    iax.scatter([0.47],[0.52],s=130,marker="*",color=INK,zorder=4)
+    iax.scatter([0.53,0.40],[0.60,0.45],s=42,color=SIGNAL,zorder=3)
+    iax.scatter([0.88],[0.15],s=42,color=NEG,zorder=3)
+    circ=plt.Circle((0.47,0.52),0.17,fill=False,ls=(0,(4,3)),lw=1.4,color=BLUE,zorder=2)
+    iax.add_patch(circ)
+    iax.annotate("anchor ★",(0.47,0.52),xytext=(-58,26),textcoords="offset points",
+                 fontsize=8.5,family=MONO,color=INK)
+    iax.annotate("top-8 neighbourhood",(0.47,0.35),xytext=(0,-14),textcoords="offset points",
+                 fontsize=8,family=MONO,color=BLUE,ha="center")
+    iax.annotate("found partners",(0.53,0.60),xytext=(14,10),textcoords="offset points",
+                 fontsize=8,family=MONO,color=SIGNAL)
+    iax.annotate("missed partner",(0.88,0.15),xytext=(-6,12),textcoords="offset points",
+                 fontsize=8,family=MONO,color=NEG,ha="right")
+    ax.text(0.7925,0.39,"token space (schematic)",family=MONO,fontsize=8,color=MUT,
+            va="top",ha="center")
+    # precision-vs-recall contrast boxes
+    ax.add_patch(FancyBboxPatch((0.06,0.245),0.86,0.10,boxstyle="round,pad=0.006,rounding_size=0.012",
+        linewidth=1,edgecolor=LINE,facecolor=SURF,mutation_aspect=13.333/7.5,zorder=1))
+    ax.add_patch(Rectangle((0.06,0.255),0.005,0.08,color=NEG,zorder=2))
+    ax.text(0.085,0.335,"PRECISION@8 — THE WRONG SCORE HERE",family=MONO,fontsize=8.5,color=NEG,va="top")
+    ax.text(0.085,0.307,"“how many of the 8 slots hold partners?” — with only 1 partner in existence, even a PERFECT token scores 1/8 = 0.125:",
+            family=SANS,fontsize=11,color=INKS,va="top")
+    ax.text(0.085,0.278,"the number measures how rare partners are, not how good the token is — every method looks identical.",
+            family=SANS,fontsize=11,color=INKS,va="top")
+    ax.add_patch(FancyBboxPatch((0.06,0.125),0.86,0.10,boxstyle="round,pad=0.006,rounding_size=0.012",
+        linewidth=1,edgecolor=LINE,facecolor=SURF,mutation_aspect=13.333/7.5,zorder=1))
+    ax.add_patch(Rectangle((0.06,0.135),0.005,0.08,color=POS,zorder=2))
+    ax.text(0.085,0.215,"RECALL@8 — THE SCORE WE USE",family=MONO,fontsize=8.5,color=POS,va="top")
+    ax.text(0.085,0.187,"“of the partners that exist, how many were found?” — a perfect token scores 1.0 at any rarity, and 1 − recall = fraction missed:",
+            family=SANS,fontsize=11,color=INKS,va="top")
+    ax.text(0.085,0.158,"library 0.9992 vs untrained reference 0.9833  →  0.08 % vs 1.7 % of partners missed — a 20× reduction.",
+            family=SANS,fontsize=11,color=INKS,va="top")
+    setup_line(ax,"averaged over anchors with ≥1 partner · denominator capped at min(8, #partners): 20 partners can't all fit in 8 slots",y=0.095)
+    emit(fig)
+
+    # ---- 6 · metrics -----------------------------------------------------------------
+    fig,ax=slide(); eyebrow(ax,"2 · methodology")
     title(ax,"What we measure, and why")
     ax.add_patch(FancyBboxPatch((0.06,0.615),0.86,0.115,boxstyle="round,pad=0.008,rounding_size=0.015",
         linewidth=1,edgecolor=LINE,facecolor=SURF,mutation_aspect=13.333/7.5,zorder=1))
