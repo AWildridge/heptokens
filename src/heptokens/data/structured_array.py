@@ -45,6 +45,9 @@ class StructuredArrayHDF5Dataset(Dataset):
         set_features: Field names to load from ``set_group``.
         label_key: Field name in ``obj_group`` used as classification label.
             Pass ``None`` to omit labels from the output dict.
+        weight_key: Optional field name in ``obj_group`` holding per-event
+            physics weights (e.g. cross-section weights); emitted under
+            ``output_weights_key`` and passed through collation untouched.
         mask_key: Field name in ``set_group`` used as the validity mask.
         output_obj_key: Output dict key for object-level features.
         output_cst_key: Output dict key for set-level features.
@@ -63,11 +66,13 @@ class StructuredArrayHDF5Dataset(Dataset):
         obj_features: list[str],
         set_features: list[str],
         label_key: str | None = None,
+        weight_key: str | None = None,
         mask_key: str = "valid",
         output_obj_key: str = "jets",
         output_cst_key: str = "csts",
         output_mask_key: str = "mask",
         output_labels_key: str = "labels",
+        output_weights_key: str = "weights",
         num_samples: int | None = None,
         num_elements: int | None = None,
         filter_fn: Callable[[np.ndarray, np.ndarray, np.ndarray], np.ndarray] | None = None,
@@ -77,7 +82,9 @@ class StructuredArrayHDF5Dataset(Dataset):
         self.output_cst_key = output_cst_key
         self.output_mask_key = output_mask_key
         self.output_labels_key = output_labels_key
+        self.output_weights_key = output_weights_key
         self.label_key = label_key
+        self.weight_key = weight_key
 
         with h5py.File(file_path, mode="r") as f:
             obj_node = f[obj_group]
@@ -93,6 +100,9 @@ class StructuredArrayHDF5Dataset(Dataset):
                     [obj_raw[feat].astype(np.float32) for feat in obj_features]
                 )
                 raw_labels = obj_raw[label_key] if label_key is not None else None
+                weights_array = (
+                    obj_raw[weight_key].astype(np.float32) if weight_key is not None else None
+                )
             else:
                 n_total = len(obj_node[obj_features[0]])
                 n = min(n_total, num_samples) if num_samples is not None else n_total
@@ -100,6 +110,11 @@ class StructuredArrayHDF5Dataset(Dataset):
                 for i, feat in enumerate(obj_features):
                     obj_array[:, i] = obj_node[feat][:n]
                 raw_labels = obj_node[label_key][:n] if label_key is not None else None
+                weights_array = (
+                    obj_node[weight_key][:n].astype(np.float32)
+                    if weight_key is not None
+                    else None
+                )
 
             labels_array = None
             if raw_labels is not None:
@@ -140,6 +155,8 @@ class StructuredArrayHDF5Dataset(Dataset):
             mask_array = mask_array[keep]
             if labels_array is not None:
                 labels_array = labels_array[keep]
+            if weights_array is not None:
+                weights_array = weights_array[keep]
             n = int(keep.sum())
             log.info("Filtered %d → %d events", n_before, n)
 
@@ -147,6 +164,7 @@ class StructuredArrayHDF5Dataset(Dataset):
         self.set_data = torch.from_numpy(set_array)
         self.mask = torch.from_numpy(mask_array)
         self.labels = torch.from_numpy(labels_array) if labels_array is not None else None
+        self.weights = torch.from_numpy(weights_array) if weights_array is not None else None
 
         log.info(
             "Loaded %d events from %s (elements=%d, obj_feats=%d, set_feats=%d)",
@@ -168,6 +186,8 @@ class StructuredArrayHDF5Dataset(Dataset):
         }
         if self.labels is not None:
             sample[self.output_labels_key] = self.labels[idx]
+        if self.weights is not None:
+            sample[self.output_weights_key] = self.weights[idx]
         return sample
 
 

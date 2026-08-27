@@ -282,4 +282,6 @@ class LitContrastiveTokenizer(ScheduledOptimiserMixin, LightningModule):
             result["labels"] = batch["labels"]
         if "eventNumber" in batch:
             result["eventNumber"] = batch["eventNumber"]
+        if "weights" in batch:
+            result["weights"] = batch["weights"]
         return result

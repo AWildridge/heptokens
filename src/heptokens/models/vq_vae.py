@@ -238,4 +238,6 @@ class LitVqVae(ScheduledOptimiserMixin, LightningModule):
         result = {"indices": self.encode_indices(batch), "labels": batch["labels"]}
         if "eventNumber" in batch:
             result["eventNumber"] = batch["eventNumber"]
+        if "weights" in batch:
+            result["weights"] = batch["weights"]
         return result

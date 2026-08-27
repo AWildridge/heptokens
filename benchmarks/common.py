@@ -36,6 +36,12 @@ AOJ_STRUCT_H5 = DATA_DIR / "aoj_structured.h5"
 AOJ_CST_SCALER = DATA_DIR / "aoj_cst_scaler.joblib"
 AOJ_JET_SCALER = DATA_DIR / "aoj_jet_scaler.joblib"
 
+# Aspen Open Jets MC (record 18610): QCD (pT-binned, per-jet xsec weights) +
+# ZPrime->ttbar top jets. Labelled (0=QCD, 1=top); preprocessing REUSES the
+# frozen real-AOJ scalers (release contract — tokenizers were trained on RunG).
+AOJMC_RAW_DIR = DATA_DIR / "aojmc"
+AOJMC_STRUCT_H5 = DATA_DIR / "aojmc_structured.h5"
+
 # Particle-library criterion (user spec): same PID, same charge, dpT <= 10%,
 # |deta| and |dphi| <= 0.1. Feature columns for AOJ: [pt, eta, phi, pid, charge].
 LIBRARY_CRITERION = dict(
@@ -50,6 +56,8 @@ AOJ_DATASET_KW = dict(
     label_key="label",
     mask_key="valid",
 )
+# AOJ MC: same schema + per-jet physics weights threaded through the pipeline.
+AOJMC_DATASET_KW = dict(AOJ_DATASET_KW, weight_key="weight")
 
 N_CLASSES = 5
 N_FEATURES = 3  # (pt, deta, dphi)
@@ -76,6 +84,9 @@ def make_transforms(data: str = "jets5c") -> dict:
     """
     from heptokens.data.collation import keep_raw_batch, preprocess_batch
 
+    # jets5c has its own scalers; AOJ and AOJ-MC share the frozen real-AOJ
+    # scalers (the release contract: MC is consumed with the released
+    # preprocessing, never refit).
     cst, jet = (CST_SCALER, JET_SCALER) if data == "jets5c" else (AOJ_CST_SCALER, AOJ_JET_SCALER)
     return {
         "keep_raw": keep_raw_batch,
@@ -87,14 +98,15 @@ def make_transforms(data: str = "jets5c") -> dict:
     }
 
 
-def preprocess_cfg() -> dict:
+def preprocess_cfg(scalers="jets5c") -> dict:
     """Same preprocessing as a Hydra-instantiable config (for export entrypoints)."""
+    cst, jet = (CST_SCALER, JET_SCALER) if scalers == "jets5c" else (AOJ_CST_SCALER, AOJ_JET_SCALER)
     return {
         "preprocess": {
             "_target_": "heptokens.data.collation.preprocess_batch",
             "_partial_": True,
-            "cst_fn": {"_target_": "joblib.load", "filename": str(CST_SCALER)},
-            "jet_fn": {"_target_": "joblib.load", "filename": str(JET_SCALER)},
+            "cst_fn": {"_target_": "joblib.load", "filename": str(cst)},
+            "jet_fn": {"_target_": "joblib.load", "filename": str(jet)},
         }
     }
 
@@ -120,6 +132,28 @@ def datamodule_cfg(train_frac, val_frac, test_frac, batch_size, num_workers=8) -
     }
 
 
+def aojmc_datamodule_cfg(train_frac, val_frac, test_frac, batch_size, num_workers=8) -> dict:
+    """Export datamodule config for the AOJ-MC file (frozen AOJ scalers, weights)."""
+    return {
+        "_target_": "heptokens.data.structured_array.StructuredArrayModule",
+        "dataset": {
+            "_target_": "heptokens.data.structured_array.StructuredArrayHDF5Dataset",
+            "_partial_": True,
+            "file_path": str(AOJMC_STRUCT_H5),
+            **AOJMC_DATASET_KW,
+        },
+        "data_path": str(AOJMC_STRUCT_H5),
+        "train_frac": train_frac,
+        "val_frac": val_frac,
+        "test_frac": test_frac,
+        "batch_size": batch_size,
+        "num_workers": num_workers,
+        "pin_memory": True,
+        "transforms": preprocess_cfg(scalers="aoj"),
+        "seed": SEED,
+    }
+
+
 def make_datamodule(
     batch_size=1024, num_workers=8, num_samples=None, transforms="preprocess", data="jets5c"
 ):
@@ -129,8 +163,13 @@ def make_datamodule(
         StructuredArrayModule,
     )
 
-    kw = dict(DATASET_KW if data == "jets5c" else AOJ_DATASET_KW)
-    if data != "jets5c":
+    if data == "jets5c":
+        kw = dict(DATASET_KW)
+    elif data == "aojmc":
+        kw = dict(AOJMC_DATASET_KW)
+        kw["file_path"] = str(AOJMC_STRUCT_H5)
+    else:
+        kw = dict(AOJ_DATASET_KW)
         kw["file_path"] = str(AOJ_STRUCT_H5)
     if num_samples is not None:
         kw["num_samples"] = num_samples

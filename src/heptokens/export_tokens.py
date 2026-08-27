@@ -74,7 +74,15 @@ class MemmapPredictionWriter(BasePredictionWriter):
             dtype=np.int64,
             shape=(total_jets,),
         )
+        self.weights_path = self.tmp_dir / "weights.npy"
+        self.weights_mmap = np.lib.format.open_memmap(
+            str(self.weights_path),
+            mode="w+",
+            dtype=np.float32,
+            shape=(total_jets,),
+        )
         self.has_events = False
+        self.has_weights = False
 
     def write_on_batch_end(
         self, trainer, pl_module, prediction, batch_indices, batch, batch_idx, dataloader_idx
@@ -90,11 +98,17 @@ class MemmapPredictionWriter(BasePredictionWriter):
             self.has_events = True
             self.events_mmap[self.pos : self.pos + n] = prediction["eventNumber"].cpu().numpy()
 
+        if "weights" in prediction:
+            self.has_weights = True
+            self.weights_mmap[self.pos : self.pos + n] = (
+                prediction["weights"].cpu().numpy().astype(np.float32)
+            )
+
         self.pos += n
 
     def finalize(self) -> int:
         """Flush mmaps and return actual number of jets written."""
-        del self.indices_mmap, self.labels_mmap, self.events_mmap
+        del self.indices_mmap, self.labels_mmap, self.events_mmap, self.weights_mmap
         return self.pos
 
 
@@ -146,6 +160,10 @@ def export(cfg: DictConfig) -> None:
             ]
             save_dict["eventNumber"] = event_numbers
             log.info(f"Including eventNumber array of length {actual_jets:,}")
+        if writer.has_weights:
+            weights = np.lib.format.open_memmap(str(writer.weights_path), mode="r")[:actual_jets]
+            save_dict["weights"] = weights
+            log.info(f"Including weights array of length {actual_jets:,}")
 
         log.info(
             f"Tokenized {actual_jets:,} jets -> "
