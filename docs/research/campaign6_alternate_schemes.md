@@ -200,6 +200,22 @@ quantization per se, not codebook dynamics. Both outcomes are publishable; the
 recall-vs-bits placement against 6b decides whether *training* the discrete token
 pays rent at all.
 
+### Outcomes (2026-08-27 — full numbers in `benchmarks/README.md` §Campaign 6)
+
+All 23 runs + eval completed; headline arms at 3 seeds. **6a:** recall parity with
+the deterministic dim-6 library at ~13 KL-bits (0.9984 ± 0.0015) but R² ≤ 0.82 —
+outcome (b): VQ not retired, complementarity survives rate-matching. Bonus
+findings: the KL-rate axis is *broken* for deterministic-μ releases (β=3: recall
+0.9995 at 0.001 KL-bits — retro-flags C5's "1.4-bit" label), and C5's
+"reconstruction buys species, not the criterion" was a β=1 rate artifact
+(recon-only β=0.1: 0.976 / R² 0.920 / probes 1.0 — still below the null). **6b:**
+the double grid (0.9655 @ 26.3 bits, R² 0.949, probes 1.0) near-dominates every
+learned discrete token; blast-radius clause partially triggered. **6c:** outcome
+(b), upgraded — the kernel hurts FSQ at every rate (10–24 bits) vs recon-only
+FSQ, mechanism = kernel-induced code degeneracy (2 % grid occupancy): the
+conflict is quantization per se, not codebook dynamics. The criterion-shaped
+discrete program is closed; discrete tiers should bin features, not embeddings.
+
 ### Run plan
 
 `benchmarks/run_campaign6.sh [a|b|eval|all]` — idempotent, sequential (one GPU job

@@ -68,6 +68,33 @@ if [ "$STAGE" = "b" ] || [ "$STAGE" = "all" ]; then
   run c6_fsqK_aoj_d6_15b_zq --model fsq --encoder mlp --fsq-levels 6,6,6,6,6,6 --loss kernel --fsq-kernel-on z_q --batch-size 1024
   # Recon-only FSQ control (plain-VQ analog at this bottleneck).
   run c6_fsq_aoj_d6_15b  --model fsq --encoder mlp --fsq-levels 6,6,6,6,6,6   --contrastive-weight 0 --recon-weight 1.0 --batch-size 1024
+  # Rate-matched follow-up: 24-bit FSQ (dim 8), comparable to VQ 27-30b and the
+  # 23-26b physics grid — removes the rate confound from the 10-18b ladder.
+  run c6_fsq_aoj_d8_24b  --model fsq --encoder mlp --fsq-levels 8,8,8,8,8,8,8,8 --contrastive-weight 0 --recon-weight 1.0 --batch-size 1024
+  run c6_fsqK_aoj_d8_24b --model fsq --encoder mlp --fsq-levels 8,8,8,8,8,8,8,8 --loss kernel --batch-size 1024
+fi
+
+if [ "$STAGE" = "s" ] || [ "$STAGE" = "all" ]; then
+  echo "===== Seed replicas for the headline 6a arms (audit: no single-seed claims) ====="
+  # train_tokenizers.py appends _s<seed> to --run-name itself; check the final dir.
+  run_seed () {
+    local base="$1" seed="$2"; shift 2
+    if [ -f "$TOK/${base}_s${seed}/checkpoints/last.ckpt" ]; then
+      echo "[skip] ${base}_s${seed} (last.ckpt exists)"
+      return 0
+    fi
+    echo "[run ] ${base}_s${seed} :: $*"
+    if $PY benchmarks/train_tokenizers.py --run-name "$base" --seed "$seed" --data aoj --epochs 20 "$@"; then
+      echo "[ok  ] ${base}_s${seed}"
+    else
+      echo "[FAIL] ${base}_s${seed}"
+      FAILED="$FAILED ${base}_s${seed}"
+    fi
+  }
+  for SEED in 43 44; do
+    run_seed c6_vaeK_aoj_b003_d6 $SEED --model vae --encoder mlp --latent-dim 6 --contrastive --loss kernel --beta 0.03 --batch-size 1024
+    run_seed c6_vae_aoj_b01_d6   $SEED --model vae --encoder mlp --latent-dim 6 --beta 0.1 --batch-size 1024
+  done
 fi
 
 if [ "$STAGE" = "eval" ] || [ "$STAGE" = "all" ]; then

@@ -1,5 +1,97 @@
 # Tokenizer benchmarks
 
+## Campaign 6 — alternate schemes: rate-matched VAE frontier, physics grid, FSQ
+
+**The question.** Three arms from the alternate-scheme evaluation
+(`docs/research/campaign6_alternate_schemes.md`, pre-registered outcomes in §5):
+**6a** — the sanctioned β-sweep: is the C5 VAE-vs-VQ verdict rate-fair, i.e. does
+the contrastive VAE match plain VQ on *information* once allowed VQ-level rate?
+**6b** — an untrained criterion-aligned grid (log-pT bins of ln(1.1), η/φ bins of
+0.1, exact PID/charge symbols; double grid = half-bin-offset copy): what must any
+learned *discrete* token beat? **6c** — FSQ (codebook-free quantization, zero
+learned params): was the C4/C5 criterion-shaped-VQ negative about codebook/EMA
+dynamics, or about quantization itself? All AOJ, context-free MLP, 20 epochs;
+headline arms at 3 seeds.
+
+| artifact | bits | recall@8 ↑ | dpt5 | kNN purity | PID probe | pT R² | note |
+|---|---|---|---|---|---|---|---|
+| *6a — contrastive VAE (kernel on μ), β sweep* | | | | | | | |
+| **vaeK β=0.03 d6** (3 seeds) | **13.3 KL** | **0.9984 ± .0015** | 1.000 | 0.989 | 0.59 | 0.758 ± .037 | recall parity with library_d6 at ~7× fewer bits |
+| vaeK β=0.1 d6 | 10.7 KL | 0.992 | 0.991 | 0.994 | 0.69 | 0.767 | |
+| vaeK β=0.3 d6 | 0.57 KL | 0.977 | 0.981 | 0.976 | 0.63 | 0.821 | best R² on the sweep |
+| vaeK β=1 d6 | 0.18 KL | 0.974 | 0.978 | 0.975 | 0.81 | 0.803 | |
+| vaeK β=3 d6 | **0.001 KL** | 0.9995 | 1.000 | 0.987 | 0.56 | 0.568 | **KL-rate artifact — see finding 2** |
+| vaeK β=3 d6 + free-bits .05 | 0.41 KL | 0.974 | 0.979 | 0.974 | 0.78 | 0.767 | free-bits does not repair the accounting |
+| **vae β=0.1 d6, recon-only** (3 seeds) | 11.0 KL | 0.9762 ± .0041 | 0.985 | 0.995 | **1.00** | **0.920 ± .011** | revises the C5 recon-only story — finding 3 |
+| *6b — physics grid (UNTRAINED discrete reference)* | | | | | | | |
+| physics grid | 23.3 | 0.9553 | 0.963 | 0.987 | 1.00 | 0.948 | zero parameters |
+| **physics grid, double (½-bin offset)** | 26.3 | **0.9655** | 0.973 | 0.979 | 1.00 | 0.949 | beats every learned discrete token on recall |
+| *6c — FSQ (codebook-free discrete)* | | | | | | | |
+| fsqK d4 [8,5,5,5] | 10.0 | 0.039 | 0.037 | 0.883 | 0.91 | 0.562 | 208/1000 grid pts used |
+| fsqK d6 [6⁶] | 15.5 | 0.136 | 0.138 | 0.719 | 0.53 | 0.661 | 1 004/46 656 pts (2%) — code degeneracy |
+| fsqK d6 [6⁶], kernel→z_q | 15.5 | 0.092 | 0.093 | 0.977 | 0.95 | 0.346 | STE placement no better |
+| fsqK d6 [6⁶] + recon w=1 | 15.5 | 0.571 | 0.589 | 0.933 | 0.73 | 0.692 | recon partly rescues |
+| fsq d6 [6⁶] recon-only | 15.5 | 0.633 | 0.676 | 0.862 | 0.76 | 0.849 | 12 968 pts (28%) used |
+| fsqK d6 [8⁶] | 18.0 | 0.411 | 0.416 | 0.832 | 0.48 | 0.582 | |
+| fsqK d8 [8⁸] | 24.0 | 0.530 | — | 0.728 | 0.43 | 0.388 | rate-matched: kernel still hurts |
+| fsq d8 [8⁸] recon-only | 24.0 | 0.851 | — | 0.939 | 0.81 | 0.840 | < grid @ 23.3 bits |
+| *references (this eval)* | | | | | | | |
+| plain VQ 3×1024 (c5) | 30 | 0.945 | 0.966 | 0.996 | 1.00 | 0.970 | |
+| VQ particle 3×512 (3 seeds) | 27 | 0.927 ± .006 | 0.945 | 0.996 | 1.00 | 0.971 | |
+| library dim 6 (C4) | 96 | 0.9996 | 1.000 | 0.980 | 0.49 | 0.743 | |
+| null (PID one-hot ⊕ kin) | 192 | 0.9833 | 0.986 | 0.991 | 1.00 | 0.949 | untrained |
+
+**Findings**
+
+1. **The β dial completes the rate axis, and VQ is *not* retired.** The
+   contrastive VAE reaches criterion recall **0.9984 ± 0.0015 at ~13 KL-bits**
+   (β=0.03, dim 6) — parity with the 96-bit deterministic dim-6 library and far
+   above plain VQ (0.945 at 30 bits) — but pT R² tops out ≈ 0.82 anywhere on the
+   sweep, short of the pre-registered ≥ 0.97 retirement bar. The
+   organization-vs-information complementarity survives rate-matching.
+2. **KL-rate is not a release rate for deterministic-μ tokens — measured.** The
+   β=3 arm scores recall 0.9995 at a measured KL of **0.001 bits**: cosine
+   ranking is scale-invariant, so a tiny-norm but structured μ carries the full
+   criterion geometry while the posterior sits on the prior. The C5 "~1.4-bit"
+   label was this artifact in milder form. Until an operational codec exists
+   (entropy-coding roadmap item), continuous-token rates must be quoted as fp16
+   dim·16; KL-bits are reported as diagnostics only.
+3. **"Reconstruction buys species, not the criterion" was a rate artifact.** At
+   β=0.1 (≈ 11 KL-bits) the *recon-only* VAE reaches recall **0.976 ± 0.004**
+   with pT R² 0.920 and perfect linear PID/charge probes — C5's 0.383 was the
+   β=1 bottleneck, not the objective. It still does not beat the untrained null
+   (0.983 / 0.949) on either axis, so the kernel remains the only thing that
+   *ever* has (0.9984 vs 0.9833).
+4. **The untrained physics grid near-dominates every learned discrete token.**
+   Double grid: recall 0.9655 at 26.3 bits with R² 0.949 and probes 1.0 — more
+   recall than plain VQ at fewer bits; the trained VQ's entire surviving edge is
+   +0.02 pT R² and +0.017 purity. Below the 0.99 auto-retirement threshold, but
+   the practical verdict stands: at the 23–30-bit tier, **learning a discrete
+   token currently buys almost nothing over criterion-aligned binning**, and the
+   grid is trivially computable on any detector (a natural cross-experiment
+   release tier).
+5. **The discrete negative upgrades: quantization per se conflicts with the
+   kernel geometry.** With no codebook, no EMA, no commitment loss, the kernel
+   still *hurts* at every rate tested (10 → 24 bits: 0.039/0.136/0.411/0.530 vs
+   recon-only 0.633/0.851), and the mechanism is now visible: the kernel's fixed
+   point drives criterion partners toward coincidence, which any quantizer turns
+   into code degeneracy (2% grid occupancy vs 28% for recon-only) — retrieval
+   then cannot rank true partners among identical-code impostors. Together with
+   C4/C5 this closes the "criterion-shaped discrete token" program: install the
+   criterion on a continuous latent, and if a discrete tier is needed, bin the
+   *features* (6b), not the embedding.
+
+**The honest tradeoff.** Still no single trained token is sub-raw,
+reconstruction-faithful, and criterion-perfect. The updated menu: criterion +
+compact → contrastive VAE (recall 0.998 at dim 6 / 96 fp16 bits, honest rate);
+faithful + criterion at a discrete tier → the untrained double grid (0.966 /
+R² 0.949 / 26.3 bits) with trained VQ worth keeping only if the last +0.02 of
+pT R² matters; the corner remains open for the REPA-style distillation and
+factorized-release proposals (doc §4).
+
+Reproduce: `benchmarks/run_campaign6.sh` → `eval_library.py` (grid providers are
+eval-time, no training). Figures: `library_rate.png` (all points, one bits axis).
+
 ## Campaign 5 — continuous (VAE) vs discrete (VQ), ± physics, context-free vs -aware
 
 **The question.** A clean 2×2×2 on one bits axis: bottleneck {continuous **VAE**,
