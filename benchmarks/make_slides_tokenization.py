@@ -28,7 +28,7 @@ _REPO=_P(__file__).resolve().parent.parent
 OUT=str(_REPO/"docs"/"tokenization_slides.pdf")
 plt.rcParams.update({"pdf.fonttype":42,"font.family":SANS})
 
-TOTAL=20
+TOTAL=21
 _SLIDE=[0]
 
 def emit(fig):
@@ -182,7 +182,44 @@ with PdfPages(OUT) as pdf:
     setup_line(ax,"single A100 MIG slice · torch 2.5.1 · 15-20 epochs per arm · full configs in benchmarks/")
     emit(fig)
 
-    # ---- 5 · metrics intuition (worked example) -----------------------------------------
+    # ---- 5 · model architectures & the library baseline ---------------------------------
+    fig,ax=slide(); eyebrow(ax,"2 · methodology")
+    title(ax,"Model architectures under test, and the library baseline")
+    ax.add_patch(FancyBboxPatch((0.06,0.60),0.86,0.155,boxstyle="round,pad=0.008,rounding_size=0.015",
+        linewidth=1,edgecolor=LINE,facecolor=SURF,mutation_aspect=13.333/7.5,zorder=1))
+    ax.add_patch(Rectangle((0.06,0.612),0.005,0.131,color=AMBER,zorder=2))
+    ax.text(0.085,0.737,"HEPTOKENS LIBRARY BASELINE — the pre-study production tokenizer (LitVqVae)",
+            family=MONO,fontsize=9.5,color=AMBER,va="top",fontweight="bold")
+    ax.text(0.085,0.706,"transformer encoder (4 layers, d_model 128)  →  residual VQ: 3 × 512 codes @ dim 16 (STE + EMA)  →  transformer decoder",
+            family=MONO,fontsize=11,color=INK,va="top")
+    ax.text(0.085,0.673,"objective: full-particle reconstruction · release = integer code indices, 27 bits/particle",
+            family=SANS,fontsize=11.5,color=INKS,va="top")
+    ax.text(0.085,0.641,"kept as the reference arm in every campaign; from C2b also in matched form (vqvae_particle: the library's own "
+            "encoder, only the objective differs).",family=SANS,fontsize=10.5,color=MUT,va="top")
+    comp=[("ENCODERS",SIGNAL,
+           "context-aware transformer (4 L, d_model 128 — C1; the C5 'attention' arm)  vs  context-free per-particle "
+           "MLP ParticleEncoder (128-128-64; PID/charge embeddings) — the method of record from C2 on. Capacity "
+           "study: width 64 ≈ 256 (the encoder is overbuilt); every encoder is 10⁴–10⁵ parameters by design."),
+          ("BOTTLENECKS",SIGNAL,
+           "none — deterministic continuous token, dim 4–16 (LitContrastiveTokenizer) · Gaussian VAE, token = "
+           "posterior mean μ, β/free-bits dials (LitVae) · residual VQ 3×512 / 3×1024 / 1×8192, STE+EMA (LitVqVae) · "
+           "FSQ fixed grid, 10–24 b, zero parameters · untrained: criterion feature grid, post-hoc residual k-means."),
+          ("OBJECTIVES",SIGNAL,
+           "full-particle reconstruction (L1 kinematics + CE PID + CE charge) · graded physics-kernel contrastive "
+           "(method of record) · hard-window SupCon · smearing-VICReg two-view (v1) · hybrids: kernel + w·recon; "
+           "kernel → z_q / z_e on VQ (LitContrastiveVqVae)."),
+          ("CONSUMER PROBE",SIGNAL,
+           "2-layer transformer classifier that reads only the exported token files — never the constituents.")]
+    yy=0.555
+    for lab,c,txt in comp:
+        ax.text(0.06,yy,lab,family=MONO,fontsize=9.5,color=c,va="top",fontweight="bold")
+        wrapped=textwrap.fill(txt,width=95)
+        ax.text(0.235,yy,wrapped,family=SANS,fontsize=10.5,color=INKS,va="top",linespacing=1.3)
+        yy-=0.030+0.026*(wrapped.count("\n")+1)
+    setup_line(ax,"method of record = ParticleEncoder MLP + graded kernel, no bottleneck · all Lightning modules in src/heptokens/models/")
+    emit(fig)
+
+    # ---- 6 · metrics intuition (worked example) -----------------------------------------
     fig,ax=slide(); eyebrow(ax,"2 · methodology")
     title(ax,"How a token is scored — a worked example")
     steps=[("1","Pick a particle (the anchor):","a π⁺ with pT = 10 GeV at (η, φ) = (0.5, 1.2)."),
