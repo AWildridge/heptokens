@@ -45,7 +45,7 @@ from eval_library import grid_centers
 from heptokens.export_latents import export as export_latents
 from heptokens.export_tokens import export as export_tokens
 from heptokens.models.particle_encoder import DEFAULT_PDG_IDS
-from heptokens.models.token_classifier import FeatureClassifier, VectorClassifier
+from heptokens.models.token_classifier import VectorClassifier
 
 MC_PROBES_DIR = PROBES_DIR / "mc"
 PT_BIN_EDGES = [300.0, 470.0, 600.0, 800.0, 1200.0]
@@ -67,7 +67,11 @@ EXPORT_ARMS = {
     "vqvae_particle": ("tokens", "vqvae_particle_aoj", None),  # heptokens baseline
     "c5_vqp": ("tokens", "c5_vqp_aoj", None),
 }
-ALL_ARMS = ["raw_features", "null_handcrafted", "physics_grid_double", *EXPORT_ARMS]
+# raw_features = the full-information ceiling: scaled kinematics + PID one-hot
+# + charge. (Feeding raw PDG codes through a linear layer swamps the O(1)
+# kinematics with an O(200) column — measured: AUC 0.58 vs one-hot encoding.)
+# raw_kinematics = the PID-blind reference (scaled pt/eta/phi only).
+ALL_ARMS = ["raw_features", "raw_kinematics", "physics_grid_double", *EXPORT_ARMS]
 
 
 # --------------------------------------------------------------------- exports
@@ -209,9 +213,9 @@ def build_untrained_inputs(arm, meta, n):
 
     scaler = joblib.load(AOJ_CST_SCALER)
     pdg = np.array(DEFAULT_PDG_IDS, dtype=np.float32)
-    if arm == "raw_features":
-        z = scale_kinematics(csts, valid, scaler)
-    elif arm == "null_handcrafted":
+    if arm == "raw_kinematics":
+        z = scale_kinematics(csts, valid, scaler)[..., :3]
+    elif arm == "raw_features":
         scaled = scale_kinematics(csts, valid, scaler)
         onehot = (csts[..., 3:4] == pdg).astype(np.float32) * valid[..., None]
         z = np.concatenate([scaled[..., :3], onehot, csts[..., 4:5] * valid[..., None]], axis=-1)
@@ -289,21 +293,18 @@ def train_arm(arm, seed, z, mask, meta, weights, n, args):
     train_w, w_phys, w_match = weights
     labels = meta["label"][:n]
     n_tr, n_va = int(0.7 * n), int(0.15 * n)
-    input_key = "csts" if arm == "raw_features" else "z_q"
-    mk = lambda a, b, w, sh: DataLoader(  # noqa: E731
-        ArrayDataset(z, mask, labels, w, a, b, input_key=input_key),
-        batch_size=args.batch_size, shuffle=sh, num_workers=args.workers, drop_last=sh,
+    # The dataset is fully in-RAM, so workers only pay fork overhead — and a
+    # forked predict-loader deadlocked on the MIG slice (observed: fit fine,
+    # predict hung with idle workers). Keep workers for fit, none for predict.
+    mk = lambda a, b, w, sh, nw: DataLoader(  # noqa: E731
+        ArrayDataset(z, mask, labels, w, a, b),
+        batch_size=args.batch_size, shuffle=sh, num_workers=nw, drop_last=sh,
     )
-    tr = mk(0, n_tr, train_w, True)
-    va = mk(n_tr, n_tr + n_va, train_w, False)
-    te = mk(n_tr + n_va, n, w_phys, False)
+    tr = mk(0, n_tr, train_w, True, args.workers)
+    va = mk(n_tr, n_tr + n_va, train_w, False, args.workers)
+    te = mk(n_tr + n_va, n, w_phys, False, 0)
 
-    if arm == "raw_features":
-        probe = FeatureClassifier(
-            data_sample=torch.zeros(1, z.shape[1], z.shape[2]), **MC_PROBE_KW
-        )
-    else:
-        probe = VectorClassifier(codebook_dim=z.shape[2], **MC_PROBE_KW)
+    probe = VectorClassifier(codebook_dim=z.shape[2], **MC_PROBE_KW)
 
     trainer = L.Trainer(
         max_epochs=args.epochs,
