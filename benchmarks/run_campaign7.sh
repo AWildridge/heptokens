@@ -34,9 +34,9 @@ if [ "$STAGE" = "probes" ] || [ "$STAGE" = "all" ]; then
   if [ ! -f results/benchmarks/data/aojmc_structured.h5 ]; then
     echo "[FAIL] aojmc_structured.h5 missing — run the prepare stage first"
     FAILED="$FAILED probes"
-  # 16 h hard timeout: a silent hang must fail loudly, not eat days. The
+  # 24 h hard timeout: a silent hang must fail loudly, not eat days. The
   # harness is idempotent, so a rerun resumes from the completed probes.
-  elif timeout 57600 $PY benchmarks/train_probes_mc.py; then
+  elif timeout 86400 $PY benchmarks/train_probes_mc.py; then
     echo "[ok  ] train_probes_mc"
   else
     echo "[FAIL] train_probes_mc"

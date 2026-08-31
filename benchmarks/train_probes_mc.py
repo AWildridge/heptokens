@@ -53,10 +53,20 @@ PT_BIN_EDGES = [300.0, 470.0, 600.0, 800.0, 1200.0]
 # Shared probe: the repo's standard transformer scale (matches
 # transformer_partial()); the tiny jets5c PROBE_KW would risk capacity-limiting
 # the raw-feature ceiling. pooling MUST stay "mean" (ClsTokenPooler is broken).
+# Warmup scheduler + min_epochs + patience 8: the first sweep showed a
+# start-of-training plateau at AUC~0.5 that patience-4 early stopping killed
+# at epoch 5-6 on the harder-to-optimize interfaces, while escaped runs of the
+# SAME arm reached 0.92-0.98 — the budget below makes escape part of the deal.
+from functools import partial  # noqa: E402
+
+from heptokens.models.utils import warmup_cosine_scheduler  # noqa: E402
+
 MC_PROBE_KW = dict(
     n_classes=2, d_model=128, n_heads=8, num_layers=4, dim_feedforward=512,
     dropout=0.0, pooling="mean", learning_rate=1e-3,
+    scheduler=partial(warmup_cosine_scheduler, warmup_epochs=3),
 )
+MIN_EPOCHS, ES_PATIENCE = 12, 8
 
 # arm -> (export kind, tokenizer run dir, model_class) ; None = untrained/raw.
 EXPORT_ARMS = {
@@ -310,16 +320,18 @@ def train_arm(arm, seed, z, mask, meta, weights, n, args):
 
     trainer = L.Trainer(
         max_epochs=args.epochs,
+        min_epochs=MIN_EPOCHS,
         accelerator="auto",
         devices=1,
         precision="bf16-mixed" if torch.cuda.is_available() else 32,
+        gradient_clip_val=1.0,
         callbacks=[
             ModelCheckpoint(
                 dirpath=run_dir / "checkpoints", filename="best",
                 monitor="valid/total_loss", mode="min", save_top_k=1,
                 enable_version_counter=False, auto_insert_metric_name=False,
             ),
-            EarlyStopping(monitor="valid/total_loss", patience=4, mode="min"),
+            EarlyStopping(monitor="valid/total_loss", patience=ES_PATIENCE, mode="min"),
         ],
         logger=CSVLogger(save_dir=run_dir, name="csv"),
         log_every_n_steps=50,
@@ -424,7 +436,7 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--arms", nargs="+", default=ALL_ARMS, choices=ALL_ARMS)
     parser.add_argument("--seeds", nargs="+", type=int, default=[42, 43, 44])
-    parser.add_argument("--epochs", type=int, default=20)
+    parser.add_argument("--epochs", type=int, default=25)
     parser.add_argument("--n-jets", type=int, default=None, help="cap total jets")
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--workers", type=int, default=4)
