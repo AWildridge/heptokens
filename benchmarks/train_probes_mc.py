@@ -293,16 +293,18 @@ def train_arm(arm, seed, z, mask, meta, weights, n, args):
     train_w, w_phys, w_match = weights
     labels = meta["label"][:n]
     n_tr, n_va = int(0.7 * n), int(0.15 * n)
-    # The dataset is fully in-RAM, so workers only pay fork overhead — and a
-    # forked predict-loader deadlocked on the MIG slice (observed: fit fine,
-    # predict hung with idle workers). Keep workers for fit, none for predict.
-    mk = lambda a, b, w, sh, nw: DataLoader(  # noqa: E731
+    # No multiprocessing anywhere in this harness: forked dataloader workers
+    # deadlocked twice on this machine (once at predict, once in fit's sanity
+    # check — py-spy: main thread blocked on the worker queue with idle
+    # children). The dataset is fully in-RAM, so workers only bought fork
+    # overhead anyway; worker-less epochs measured within ~10% of the same.
+    mk = lambda a, b, w, sh: DataLoader(  # noqa: E731
         ArrayDataset(z, mask, labels, w, a, b),
-        batch_size=args.batch_size, shuffle=sh, num_workers=nw, drop_last=sh,
+        batch_size=args.batch_size, shuffle=sh, num_workers=0, drop_last=sh,
     )
-    tr = mk(0, n_tr, train_w, True, args.workers)
-    va = mk(n_tr, n_tr + n_va, train_w, False, args.workers)
-    te = mk(n_tr + n_va, n, w_phys, False, 0)
+    tr = mk(0, n_tr, train_w, True)
+    va = mk(n_tr, n_tr + n_va, train_w, False)
+    te = mk(n_tr + n_va, n, w_phys, False)
 
     probe = VectorClassifier(codebook_dim=z.shape[2], **MC_PROBE_KW)
 
