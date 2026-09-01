@@ -1,5 +1,76 @@
 # Tokenizer benchmarks
 
+## Campaign 7 — downstream QCD-vs-top on AOJ MC: what does a consumer actually get?
+
+**The question.** The mission's own success metric, measured for the first time:
+train an **identical** binary transformer classifier (VectorClassifier d128/4L,
+~0.9 M params, warmup-cosine, 25 epochs, bf16) per interface, where every token
+arm consumes the frozen export of a tokenizer **trained on real AOJ RunG data**
+applied to **AOJ MC** (record 18610) — the release-realistic transfer. Data:
+500 k jets (250 k QCD across 4 pT bins with per-jet cross-section weights,
+250 k ZPrime→tt̄ tops at M1000/1200/2500), common window 300–1200 GeV, frozen
+real-AOJ scalers (never refit). Weights end-to-end: pT-matched + class-normalized
+in the training loss; test metrics under both matched and physical weighting
+(protocol: *match + report both*), on a held-out 15 % test split identical
+across arms. 3 probe seeds each.
+
+| interface (test split, 3 seeds) | matched AUC | physical AUC | rej@30 % | rej@50 % |
+|---|---|---|---|---|
+| **physics grid, double (untrained, 26.3 b)** | **0.9829 ± .0002** | 0.9734 | **1084** | **305** |
+| raw features (kin ⊕ PID-1hot ⊕ charge) | 0.9822 ± .0002 | 0.9691 | 1034 | 301 |
+| raw kinematics (PID-blind) | 0.9819 ± .0003 | 0.9722 | 823 | 291 |
+| **recon-only VAE β=0.1, dim 6** | **0.9781 ± .0004** | 0.9711 | 737 | 207 |
+| plain VQ 3×1024 (30 b) | 0.9777 ± .0010 | 0.9643 | 710 | 213 |
+| plain VQ 3×512 (27 b, **heptokens baseline**) | 0.9770 ± .0006 | 0.9687 | 761 | 213 |
+| contrastive VAE β=0.03, dim 6 | 0.9743 ± .0010 | 0.9638 | 408 | 138 |
+| hybrid kernel+recon w=3 | 0.9715 ± .0015 | 0.9591 | 362 | 131 |
+| library dim 6 (kernel only) | 0.9696 ± .0004 | 0.9588 | 276 | 101 |
+
+rej@X = background rejection 1/FPR at X % signal efficiency (matched weights).
+Per-pT-bin AUCs degrade uniformly toward high pT (≈0.985 → 0.88–0.91) with the
+ordering preserved.
+
+**Findings**
+
+1. **The untrained physics grid is the best consumer interface in the program —
+   at 26.3 bits.** It statistically matches/exceeds the raw-feature ceiling
+   (0.9829 vs 0.9822; rejection 305 vs 301) because it *is* the raw information
+   in a well-conditioned, criterion-aligned encoding with double-grid smoothing.
+   Third consecutive campaign in which an untrained reference embarrasses the
+   learned tokens.
+2. **Downstream value tracks information retention, not criterion geometry —
+   the complementarity resolves in favour of information for this consumer.**
+   The learned-token ordering (recon-VAE ≥ VQ > contrastive-VAE > hybrid >
+   library) is exactly the within-PID pT-R²/probe ordering and exactly the
+   *reverse* of criterion recall (library: recall 0.9996, downstream last).
+3. **AUC flatters; rejection tells the truth.** The worst arm loses only 0.013
+   AUC to the ceiling but **3× in background rejection** at 50 % signal
+   efficiency (301 → 101) — the physics-relevant cost of criterion-shaped
+   forgetting.
+4. **The release-realistic transfer works.** Tokenizers trained on real 2016
+   collision data, applied unmodified to MC with frozen scalers, deliver
+   0.97+ AUC; PID codes outside the trained vocabulary are 0.0008 %.
+5. **PID buys almost nothing here** (raw kinematics 0.9819 vs full 0.9822):
+   top-vs-QCD at these pT is a substructure task. Task-dependent — flavour-type
+   consumers will weigh the PID channel differently.
+6. **Methodological:** the first sweep (archived,
+   `probes/mc_run1_unfair_stopping/`) used patience-4 early stopping and was
+   invalidated — probes plateau at AUC≈0.5 for ~5 epochs before escaping, so
+   tight budgets execute exactly the harder-to-optimize interfaces (same arm,
+   seeds 0.50/0.98/0.51). Warmup + min-epochs removed the artifact entirely
+   (all arms now converge in 24–25 epochs, seed std ≤0.0015).
+
+**The honest tradeoff.** For an FM builder doing tagging-type tasks, the ranking
+says: ship the criterion-aligned grid or an information-first learned token
+(recon-VAE dim 6 / the VQ baseline); the criterion-organized tokens cost real
+rejection. What this probe does *not* measure: retrieval/library use-cases
+(where the kernel arms dominate, C2–C6) and label-free consumers. The release
+remains two-tier — but Campaign 7 flips which tier is "primary" for supervised
+consumers.
+
+Reproduce: `benchmarks/run_campaign7.sh` (prepare → probes) →
+`train_probes_mc.py --figures-only`. Figures: `c7_auc_summary.png`, `c7_roc.png`.
+
 ## Campaign 6 — alternate schemes: rate-matched VAE frontier, physics grid, FSQ
 
 **The question.** Three arms from the alternate-scheme evaluation
