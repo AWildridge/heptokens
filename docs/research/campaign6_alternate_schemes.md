@@ -216,6 +216,13 @@ FSQ, mechanism = kernel-induced code degeneracy (2 % grid occupancy): the
 conflict is quantization per se, not codebook dynamics. The criterion-shaped
 discrete program is closed; discrete tiers should bin features, not embeddings.
 
+**Campaign 7 executed (2026-09-01)** as a *supervised* consumer probe on AOJ MC
+(QCD vs top, record 18610) rather than the masked-continuous FM probe (which
+remains open): see `campaign7_downstream_probe.md`. Verdict: downstream value
+tracks information retention (the exact reverse of criterion recall), and the
+untrained double grid tops the table at the raw-feature ceiling — settling this
+doc's ranked proposal 2 on the supervised side.
+
 ### Run plan
 
 `benchmarks/run_campaign6.sh [a|b|eval|all]` — idempotent, sequential (one GPU job

@@ -4,7 +4,7 @@
 
 **The question.** The mission's own success metric, measured for the first time:
 train an **identical** binary transformer classifier (VectorClassifier d128/4L,
-~0.9 M params, warmup-cosine, 25 epochs, bf16) per interface, where every token
+~0.83 M params, warmup-cosine, 25 epochs, bf16) per interface, where every token
 arm consumes the frozen export of a tokenizer **trained on real AOJ RunG data**
 applied to **AOJ MC** (record 18610) — the release-realistic transfer. Data:
 500 k jets (250 k QCD across 4 pT bins with per-jet cross-section weights,
@@ -27,8 +27,8 @@ across arms. 3 probe seeds each.
 | library dim 6 (kernel only) | 0.9696 ± .0004 | 0.9588 | 276 | 101 |
 
 rej@X = background rejection 1/FPR at X % signal efficiency (matched weights).
-Per-pT-bin AUCs degrade uniformly toward high pT (≈0.985 → 0.88–0.91) with the
-ordering preserved.
+Per-pT-bin AUCs degrade uniformly toward high pT (≈0.98 → 0.86–0.91) with the
+ordering broadly preserved.
 
 **Findings**
 
@@ -36,8 +36,8 @@ ordering preserved.
    at 26.3 bits.** It statistically matches/exceeds the raw-feature ceiling
    (0.9829 vs 0.9822; rejection 305 vs 301) because it *is* the raw information
    in a well-conditioned, criterion-aligned encoding with double-grid smoothing.
-   Third consecutive campaign in which an untrained reference embarrasses the
-   learned tokens.
+   Continuing the pattern of Campaigns 2b and 6, an untrained reference
+   embarrasses the learned tokens.
 2. **Downstream value tracks information retention, not criterion geometry —
    the complementarity resolves in favour of information for this consumer.**
    The learned-token ordering (recon-VAE ≥ VQ > contrastive-VAE > hybrid >
