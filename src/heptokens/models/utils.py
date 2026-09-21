@@ -149,6 +149,188 @@ def compute_codebook_utilization(
     return utilizations
 
 
+def compute_embedding_collapse(z: T.Tensor, eps: float = 1e-8) -> dict:
+    """Collapse diagnostics for continuous embeddings — the analog of
+    ``compute_codebook_utilization`` for non-quantized tokens.
+
+    Args:
+        z: Flattened valid embeddings [n_points, dim].
+
+    Returns:
+        dict with:
+        - ``std_mean`` / ``std_min``: per-dimension std statistics (0 ⇒ collapse)
+        - ``active_dims``: fraction of dimensions with std > 0.01
+        - ``effective_rank``: exp of the entropy of the normalised singular
+          values (1 ⇒ all variance in one direction)
+        - ``corr_offdiag``: mean |off-diagonal| of the correlation matrix
+          (1 ⇒ fully redundant dimensions)
+    """
+    if z.shape[0] > 4096:
+        idx = T.randperm(z.shape[0], device=z.device)[:4096]
+        z = z[idx]
+    z = z.float()
+    std = z.std(dim=0)
+
+    centered = z - z.mean(dim=0)
+    svals = T.linalg.svdvals(centered)
+    p = svals.pow(2) / (svals.pow(2).sum() + eps)
+    effective_rank = T.exp(-(p * (p + eps).log()).sum())
+
+    denom = std.clamp(min=eps)
+    corr = (centered.T @ centered) / max(z.shape[0] - 1, 1)
+    corr = corr / (denom.unsqueeze(0) * denom.unsqueeze(1))
+    n_dim = corr.shape[0]
+    off = (corr.abs().sum() - corr.diagonal().abs().sum()) / max(n_dim * (n_dim - 1), 1)
+
+    return {
+        "std_mean": std.mean(),
+        "std_min": std.min(),
+        "active_dims": (std > 0.01).float().mean(),
+        "effective_rank": effective_rank,
+        "corr_offdiag": off,
+    }
+
+
+def compute_alignment_uniformity(
+    za: T.Tensor,
+    zb: T.Tensor | None = None,
+    t: float = 2.0,
+    max_points: int = 2048,
+) -> dict:
+    """Alignment & uniformity metrics (Wang & Isola, arXiv:2005.10242).
+
+    Args:
+        za: Embeddings [n_points, dim] (normalised internally).
+        zb: Optional matched second-view embeddings; enables the alignment
+            metric (mean squared distance between positive pairs).
+        t: Uniformity temperature.
+
+    Returns:
+        dict with ``uniformity`` (lower = more uniform on the hypersphere)
+        and, when ``zb`` is given, ``alignment`` (lower = better).
+    """
+    if za.shape[0] > max_points:
+        idx = T.randperm(za.shape[0], device=za.device)[:max_points]
+        za = za[idx]
+        zb = zb[idx] if zb is not None else None
+
+    za_n = T.nn.functional.normalize(za.float(), dim=-1)
+    sq_dists = T.cdist(za_n, za_n).pow(2)
+    n = za_n.shape[0]
+    off_diag = ~T.eye(n, dtype=T.bool, device=za_n.device)
+    uniformity = T.log(T.exp(-t * sq_dists[off_diag]).mean())
+
+    out = {"uniformity": uniformity}
+    if zb is not None:
+        zb_n = T.nn.functional.normalize(zb.float(), dim=-1)
+        out["alignment"] = (za_n - zb_n).pow(2).sum(dim=-1).mean()
+    return out
+
+
+def compute_knn_pid_purity(
+    z: T.Tensor,
+    pid: T.Tensor,
+    k: int = 8,
+    max_points: int = 2048,
+) -> T.Tensor:
+    """Fraction of k-nearest neighbours sharing the anchor's PID.
+
+    A physics-faithfulness probe: high purity means the embedding metric
+    groups same-species particles together.
+
+    Args:
+        z: Flattened valid embeddings [n_points, dim].
+        pid: Matching categorical PID values [n_points].
+        k: Number of neighbours (excluding the anchor itself).
+    """
+    if z.shape[0] > max_points:
+        idx = T.randperm(z.shape[0], device=z.device)[:max_points]
+        z, pid = z[idx], pid[idx]
+
+    n = z.shape[0]
+    k = min(k, n - 1)
+    if k < 1:
+        return T.tensor(float("nan"), device=z.device)
+
+    dists = T.cdist(z.float(), z.float())
+    dists.fill_diagonal_(float("inf"))
+    knn_idx = dists.topk(k, largest=False).indices  # [n, k]
+    same = pid[knn_idx] == pid.unsqueeze(1)
+    return same.float().mean()
+
+
+def compute_retrieval_precision(
+    z: T.Tensor,
+    feats: T.Tensor,
+    pt_index: int = 0,
+    eta_index: int = 1,
+    phi_index: int = 2,
+    pid_index: int | None = None,
+    charge_index: int | None = None,
+    dpt_frac: float = 0.1,
+    deta_max: float | None = 0.1,
+    dphi_max: float | None = 0.1,
+    dr_max: float | None = None,
+    k: int = 8,
+    max_points: int = 2048,
+    eps: float = 1e-6,
+) -> dict:
+    """Library quality: do nearest neighbours satisfy the particle criterion?
+
+    For each anchor, the fraction of its k nearest embedding neighbours that
+    satisfy the *hard* particle-library criterion (same PID, same charge,
+    relative ΔpT ≤ ``dpt_frac``, same detector region). Reported alongside the
+    criterion's density among all pairs — the random-retrieval baseline.
+
+    Args:
+        z: Flattened valid embeddings [n_points, dim].
+        feats: Matching physical-unit features [n_points, n_feats].
+        deta_max/dphi_max: Per-coordinate region windows; set ``dr_max``
+            instead for a cone criterion.
+
+    Returns:
+        dict with ``precision_at_k`` and ``criterion_density``.
+    """
+    if z.shape[0] > max_points:
+        idx = T.randperm(z.shape[0], device=z.device)[:max_points]
+        z, feats = z[idx], feats[idx]
+
+    n = z.shape[0]
+    k = min(k, n - 1)
+    if k < 1:
+        nan = T.tensor(float("nan"), device=z.device)
+        return {"precision_at_k": nan, "criterion_density": nan}
+
+    pt = feats[:, pt_index]
+    dpt = (pt.unsqueeze(0) - pt.unsqueeze(1)).abs()
+    pt_scale = T.maximum(pt.unsqueeze(0), pt.unsqueeze(1)).clamp(min=eps)
+    crit = dpt / pt_scale <= dpt_frac
+
+    deta = feats[:, eta_index].unsqueeze(0) - feats[:, eta_index].unsqueeze(1)
+    dphi = feats[:, phi_index].unsqueeze(0) - feats[:, phi_index].unsqueeze(1)
+    dphi = T.remainder(dphi + T.pi, 2 * T.pi) - T.pi
+    if dr_max is not None:
+        crit = crit & ((deta.pow(2) + dphi.pow(2)).sqrt() <= dr_max)
+    else:
+        crit = crit & (deta.abs() <= deta_max) & (dphi.abs() <= dphi_max)
+
+    if pid_index is not None:
+        pid = feats[:, pid_index]
+        crit = crit & (pid.unsqueeze(0) == pid.unsqueeze(1))
+    if charge_index is not None:
+        charge = feats[:, charge_index].round()
+        crit = crit & (charge.unsqueeze(0) == charge.unsqueeze(1))
+    crit.fill_diagonal_(False)
+
+    dists = T.cdist(z.float(), z.float())
+    dists.fill_diagonal_(float("inf"))
+    knn_idx = dists.topk(k, largest=False).indices  # [n, k]
+    hits = T.gather(crit, 1, knn_idx).float().mean()
+
+    density = crit.float().sum() / max(n * (n - 1), 1)
+    return {"precision_at_k": hits, "criterion_density": density}
+
+
 class JetBackbone(nn.Module):
     """Generalised backbone for the jet models.
 

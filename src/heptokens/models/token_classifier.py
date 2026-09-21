@@ -390,7 +390,14 @@ class JetClassifier(ScheduledOptimiserMixin, LightningModule):
         labels = batch["labels"]
 
         output = self.forward(batch)
-        loss = cross_entropy(output, labels, label_smoothing=0.1)
+        weights = batch.get("weights")
+        if weights is None:
+            loss = cross_entropy(output, labels, label_smoothing=0.1)
+        else:
+            # Per-sample physics weights (e.g. cross-section weights): weighted
+            # mean so the loss scale stays comparable to the unweighted path.
+            per_sample = cross_entropy(output, labels, label_smoothing=0.1, reduction="none")
+            loss = (per_sample * weights).sum() / weights.sum().clamp(min=1e-8)
         self.log(f"{prefix}/total_loss", loss)
 
         acc = getattr(self, f"{prefix}_acc")
@@ -414,7 +421,10 @@ class JetClassifier(ScheduledOptimiserMixin, LightningModule):
     def predict_step(self, batch: dict) -> dict:
         output = self.forward(batch)
         labels = batch["labels"]
-        return {"output": output, "label": labels.unsqueeze(-1)}
+        result = {"output": output, "label": labels.unsqueeze(-1)}
+        if "weights" in batch:
+            result["weight"] = batch["weights"]
+        return result
 
 
 class TokenClassifier(JetClassifier):

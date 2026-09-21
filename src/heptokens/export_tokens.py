@@ -97,7 +97,15 @@ class MemmapPredictionWriter(BasePredictionWriter):
             dtype=np.int64,
             shape=(total_jets,),
         )
+        self.weights_path = self.tmp_dir / "weights.npy"
+        self.weights_mmap = np.lib.format.open_memmap(
+            str(self.weights_path),
+            mode="w+",
+            dtype=np.float32,
+            shape=(total_jets,),
+        )
         self.has_events = False
+        self.has_weights = False
 
         self.has_pos_tokens = self.pos_tokenizer is not None
         self.pos_tokens_path = None
@@ -140,11 +148,17 @@ class MemmapPredictionWriter(BasePredictionWriter):
                     pos_idx.cpu().numpy().astype(np.int16)
                 )
 
+        if "weights" in prediction:
+            self.has_weights = True
+            self.weights_mmap[self.pos : self.pos + n] = (
+                prediction["weights"].cpu().numpy().astype(np.float32)
+            )
+
         self.pos += n
 
     def finalize(self) -> int:
         """Flush mmaps and return actual number of jets written."""
-        del self.indices_mmap, self.labels_mmap, self.events_mmap
+        del self.indices_mmap, self.labels_mmap, self.events_mmap, self.weights_mmap
         if self.pos_tokens_mmap is not None:
             del self.pos_tokens_mmap
         return self.pos
@@ -158,7 +172,7 @@ def export(cfg: DictConfig) -> None:
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     log.info(f"Loading VQ-VAE checkpoint: {cfg.ckpt_path} (device={device})")
-    model = LitVqVae.load_from_checkpoint(cfg.ckpt_path, map_location=device)
+    model = LitVqVae.load_from_checkpoint(cfg.ckpt_path, map_location=device, weights_only=False)
     model.eval()
 
     output_dir = Path(cfg.output_dir)
@@ -228,6 +242,11 @@ def export(cfg: DictConfig) -> None:
             ]
             save_dict["pos_tokens"] = pos_tokens
             log.info(f"Including pos_tokens array of shape {pos_tokens.shape}")
+
+        if writer.has_weights:
+            weights = np.lib.format.open_memmap(str(writer.weights_path), mode="r")[:actual_jets]
+            save_dict["weights"] = weights
+            log.info(f"Including weights array of length {actual_jets:,}")
 
         log.info(
             f"Tokenized {actual_jets:,} jets -> "

@@ -8,6 +8,8 @@ environments:
     - url: https://conda.anaconda.org/pypi/
     indexes:
     - https://pypi.org/simple
+    options:
+      pypi-prerelease-mode: if-necessary-or-explicit
     packages:
       linux-64:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/_openmp_mutex-4.5-5_kmp_llvm.conda
@@ -959,14 +961,14 @@ packages:
   size: 1434
   timestamp: 1677130501720
 - conda: https://conda.anaconda.org/nvidia/noarch/cuda-version-12.9-3.conda
-  sha256: d05c0d4e2d1fbf32275db798275b9a8b57e97c0748f4c073ba6c532fe839bb06
-  md5: 40969c18662ba1d35292e70e8545ce90
+  sha256: 94223fe4c0630b58a7a795d14e4139f25a27450d275c1997d6cdac5851f13f1c
+  md5: 1863fd15709af39d8622db22408082a1
   constrains:
   - __cuda >=12
   - cudatoolkit 12.9|12.9.*
   license: LicenseRef-NVIDIA-End-User-License-Agreement
-  size: 17161
-  timestamp: 1748727273518
+  size: 17050
+  timestamp: 1778186955425
 - conda: https://conda.anaconda.org/conda-forge/linux-64/cupy-13.6.0-py311h72da3fd_2.conda
   sha256: 01f0f69dbc66ca8fe7182678258915425573f5ae5aef338efb963aceb444ef1f
   md5: 7ff80f6526ae96cff25f226544e72baa
@@ -1382,7 +1384,7 @@ packages:
 - pypi: ./
   name: heptokens
   version: 0.1.0
-  sha256: 519a08b46ecaedb5631d534eae09bab23afa7fe10be08b97910cd4e6d3ccd0f6
+  sha256: a804dec11dc711c052966e942c104b62e1773c3573c3955a8bd3186dac7276ab
   requires_dist:
   - torch>=2.4
   - lightning>=2.5
@@ -1395,7 +1397,6 @@ packages:
   - uproot>=5.7
   - rich>=14
   requires_python: '>=3.11'
-  editable: true
 - conda: https://conda.anaconda.org/conda-forge/noarch/hpack-4.1.0-pyhd8ed1ab_0.conda
   sha256: 6ad78a180576c706aabeb5b4c8ceb97c0cb25f1e112d76495bff23e3779948ba
   md5: 0a802cb9888dd14eeefc611f05c40b6e

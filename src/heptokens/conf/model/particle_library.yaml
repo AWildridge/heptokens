@@ -1,0 +1,52 @@
+---
+# configs/model/particle_library.yaml
+# Particle-library tokenizer: context-free per-particle MLP (PID/charge via
+# embeddings) trained with the graded physics-kernel objective — particles
+# with same PID, same charge, similar pT (<=10% relative) heading to the same
+# detector region (|d\eta|, |d\phi| <= 0.1) cluster together; the rest are
+# repelled through the softmax denominator. No augmentations, no views.
+#
+# Feature column convention (set_features order): [pt, eta, phi, pid, charge].
+# The datamodule transforms must include keep_raw_batch *before* preprocess so
+# the loss sees physical units, and the preprocessing scaler must be a
+# PassthroughColumnsTransformer so pid/charge columns survive unscaled.
+_target_: heptokens.models.contrastive.LitContrastiveTokenizer
+encoder:
+  _target_: heptokens.models.particle_encoder.ParticleEncoder
+  _partial_: true
+  continuous_indices: [0, 1, 2]
+  pid_index: 3
+  charge_index: 4
+  pid_emb_dim: 8
+  charge_emb_dim: 2
+  hidden_dims: [128, 128, 64]
+loss_fn:
+  _target_: heptokens.models.losses.physics_kernel_loss
+  _partial_: true
+  pt_index: 0
+  eta_index: 1
+  phi_index: 2
+  pid_index: 3
+  charge_index: 4
+  dpt_frac: 0.1
+  deta_max: 0.1
+  dphi_max: 0.1
+  region: coords    # or "cone" with dr_max
+  temperature: 0.1
+  max_points: 1024
+loss_inputs: features
+use_projector: false
+augmentation: null
+latent_dim: 16
+proj_dim: 32
+proj_hidden: 64
+learning_rate: 1e-3
+optimizer:
+  _target_: torch.optim.Adam
+  _partial_: true
+  lr: 1.0e-3
+scheduler:
+  _target_: heptokens.models.utils.warmup_cosine_scheduler
+  _partial_: true
+  warmup_epochs: 5
+  min_lr: 1.0e-6

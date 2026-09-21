@@ -149,6 +149,37 @@ class CompositeTransformer(BaseEstimator, TransformerMixin):
         return self.log_transformer.inverse_transform(X_unscaled)
 
 
+class PassthroughColumnsTransformer(BaseEstimator, TransformerMixin):
+    """Scale only the continuous columns; pass categorical columns through.
+
+    Wraps any fitted/fittable scaler so PID and charge columns survive
+    preprocessing bit-identical while kinematics get scaled — keeping the
+    whole ``preprocess_batch`` / collate machinery unchanged for mixed
+    continuous+categorical constituent features.
+    """
+
+    def __init__(self, scaler: BaseEstimator, continuous_indices: list[int]):
+        self.scaler = scaler
+        self.continuous_indices = list(continuous_indices)
+
+    def fit(self, X, y=None):
+        self.n_features_in_ = X.shape[1] if len(X.shape) > 1 else 1
+        self.scaler.fit(X[:, self.continuous_indices])
+        return self
+
+    def transform(self, X):
+        X = X.copy()
+        X[:, self.continuous_indices] = self.scaler.transform(X[:, self.continuous_indices])
+        return X
+
+    def inverse_transform(self, X):
+        X = X.copy()
+        X[:, self.continuous_indices] = self.scaler.inverse_transform(
+            X[:, self.continuous_indices]
+        )
+        return X
+
+
 def create_preprocessing_transformer(
     mode: Literal["quantile", "log_quantile", "log_standard", "standard"],
     log_feature_indices: list[int] | None = None,

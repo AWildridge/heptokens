@@ -50,7 +50,10 @@ class VqvaeTokenizer:
     def _get_model(self) -> LitVqVae:
         if self._model is None:
             device = T.device("cuda" if T.cuda.is_available() else "cpu")
-            self._model = LitVqVae.load_from_checkpoint(self.ckpt_path, map_location=device)
+            # weights_only=False: hparams contain Hydra partials; ckpt is user-produced.
+            self._model = LitVqVae.load_from_checkpoint(
+                self.ckpt_path, map_location=device, weights_only=False
+            )
             self._model.to(device)
             self._model.eval()
         return self._model
@@ -67,6 +70,54 @@ class VqvaeTokenizer:
         jet_dict["tokens"] = indices
         jet_dict["z_q"] = z_q
         return jet_dict
+
+
+class ContinuousTokenizer:
+    """Add continuous tokens (``z_q``) to the batch using a trained checkpoint.
+
+    Continuous analog of ``VqvaeTokenizer`` for ``LitContrastiveTokenizer``
+    checkpoints. Injects the latent under the ``z_q`` key so the existing
+    ``VectorClassifier`` / ``VectorEmbedder`` consume it unchanged.
+    """
+
+    def __init__(self, ckpt_path: str) -> None:
+        self.ckpt_path = ckpt_path
+        self._model = None
+
+    def _get_model(self):
+        if self._model is None:
+            from heptokens.models.contrastive import LitContrastiveTokenizer
+
+            device = T.device("cuda" if T.cuda.is_available() else "cpu")
+            # weights_only=False: hparams contain Hydra partials; ckpt is user-produced.
+            self._model = LitContrastiveTokenizer.load_from_checkpoint(
+                self.ckpt_path, map_location=device, weights_only=False
+            )
+            self._model.to(device)
+            self._model.eval()
+        return self._model
+
+    def __call__(self, jet_dict: dict[T.Tensor]) -> dict:
+        model = self._get_model()
+        device = next(model.parameters()).device
+        with T.no_grad():
+            batch = {
+                k: (v.to(device) if isinstance(v, T.Tensor) else v) for k, v in jet_dict.items()
+            }
+            z = model.encode(batch)[0]
+        jet_dict["z_q"] = z
+        return jet_dict
+
+
+def keep_raw_batch(jet_dict: dict, input_key: str = "csts", raw_key: str = "csts_raw") -> dict:
+    """Stash a pristine copy of the constituent tensor before preprocessing.
+
+    Order this transform *before* ``preprocess_batch`` in the transforms dict.
+    Losses that need physical-unit features (e.g. the physics-kernel pair
+    criterion) read ``raw_key`` while the encoder consumes the scaled tensor.
+    """
+    jet_dict[raw_key] = jet_dict[input_key].clone()
+    return jet_dict
 
 
 def preprocess_batch(
