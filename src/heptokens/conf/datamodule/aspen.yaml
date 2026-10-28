@@ -1,0 +1,8 @@
+_target_: heptokens.data.omnilearned.OmniLearnedModule
+root: /global/cfs/cdirs/m2612/treasure/datasets/heptokens-anwildri/omnilearned-full
+dataset: aspen
+num_samples: null
+num_elements: null
+batch_size: 256
+num_workers: 4
+pin_memory: true
