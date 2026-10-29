@@ -11,6 +11,7 @@ The working set includes 1,000 events from each of source tasks 252, 1152, 2546 
 - Durable verified backup: `/global/cfs/cdirs/m2612/treasure/datasets/heptokens-anwildri/QCD-multijet-paired/labels/slim-v1-validation-20261029/`.
 - That directory contains `validation.md`, `validation.json`, `RUN-RECORD.json`, plots and exact run logs.
 - Full definitions, CLI, reader and Purdue commands: [QCD label production](qcd-label-production.md).
+- A portable `fnal-main-20261029.bundle` is archived in the durable backup's `code/` directory for transfer without GitHub credentials. Clone it with `git clone -b fnal-main /path/to/fnal-main-20261029.bundle heptokens`.
 
 ## Measured size and compute
 
