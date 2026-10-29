@@ -2,6 +2,12 @@
 
 **Validated 4,000-event prefix; the 210,542,000-event campaign has not been fully preprocessed.**
 
+This note records the historical **Parquet v1** implementation and measurements.
+The current plan uses ROOT TTrees (`qcd-labels-root-v2`) readable by uproot; see
+[the production instructions](qcd-label-production.md). The measurements below
+have not been remeasured for ROOT and must not be quoted as ROOT validation or
+ROOT storage/throughput estimates.
+
 The working set includes 1,000 events from each of source tasks 252, 1152, 2546 and 4515, covering all four generator pthat bins. C/A trees and angular targets are postponed. No model training ran.
 
 ## Data and reports

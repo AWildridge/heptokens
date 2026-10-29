@@ -6,13 +6,14 @@ import sqlite3
 import uuid
 from pathlib import Path
 
+import awkward as ak
 import hist
 import numpy as np
-import pyarrow.parquet as pq
 
+from . import SCHEMA_VERSION
 from .physics import event_kinematics
 from .source import atomic_json, read_json, sha256
-from .tables import SCHEMAS
+from .tables import ROOT_FILENAME, SCHEMAS, iter_table, open_root, read_rows, schema_for
 
 AXES = dict(
     ht=(100, 0, 6000),
@@ -33,27 +34,23 @@ AXES = dict(
 def rows(partition, name):
     if isinstance(partition, dict):
         return partition[name]
-    return pq.read_table(Path(partition) / (name + ".parquet")).to_pylist()
+    return read_rows(partition, name)
 
 
 def partition_batches(partition, events_per_batch=32):
     """Merge ordered per-event table streams without reading a source into RAM."""
 
     def groups(name):
-        batches = pq.ParquetFile(Path(partition) / (name + ".parquet")).iter_batches(
-            batch_size=4096
-        )
-        stream = itertools.chain.from_iterable(batch.to_pylist() for batch in batches)
+        batches = iter_table(partition, name, batch_size=4096)
+        stream = itertools.chain.from_iterable(ak.to_list(batch) for batch in batches)
         for eid, group in itertools.groupby(stream, key=lambda r: r["event_id"]):
             yield eid, list(group)
 
     iterators = {n: iter(groups(n)) for n in SCHEMAS if n != "bookkeeping/events"}
     pending = {n: next(it, None) for n, it in iterators.items()}
-    book = pq.ParquetFile(Path(partition) / "bookkeeping/events.parquet").iter_batches(
-        batch_size=events_per_batch
-    )
+    book = iter_table(partition, "bookkeeping/events", batch_size=events_per_batch)
     for batch in book:
-        records = batch.to_pylist()
+        records = ak.to_list(batch)
         event_ids = {r["event_id"] for r in records}
         result = {"bookkeeping/events": records}
         for name, it in iterators.items():
@@ -224,6 +221,8 @@ def check_slim_links(batch):
 def validate_run(output, make_plots=False):
     output = Path(output)
     metadata = read_json(output / "metadata.json")
+    if metadata["contract"]["schema"] != SCHEMA_VERSION:
+        raise ValueError("Unsupported label output schema; use a ROOT v2 dataset")
     cfg = metadata["contract"]["config"]
     summaries, commits = {}, []
     seen_groups = SeenGroups(output)
@@ -232,10 +231,27 @@ def validate_run(output, make_plots=False):
         if not (partition / "COMMIT.json").is_file():
             raise ValueError(f"Uncommitted partition: {partition}")
         commit = read_json(partition / "COMMIT.json")
+        if commit["schema"] != SCHEMA_VERSION:
+            raise ValueError("Unsupported label output schema")
         commits.append(commit)
-        for name, info in commit["tables"].items():
+        for name, info in commit["files"].items():
             if sha256(partition / name) != info["sha256"]:
                 raise ValueError(f"Changed sidecar {partition / name}")
+        with open_root(partition / ROOT_FILENAME) as root_file:
+            import json
+
+            manifest = json.loads(str(root_file["label_schema"]))
+            if manifest["schema"] != SCHEMA_VERSION or set(manifest["tables"]) != set(SCHEMAS):
+                raise ValueError("ROOT schema metadata differs")
+            if set(commit["tables"]) != set(SCHEMAS):
+                raise ValueError("ROOT table inventory differs")
+            for name in SCHEMAS:
+                if (
+                    root_file[name].classname != "TTree"
+                    or root_file[name].num_entries != commit["tables"][name]["rows"]
+                    or manifest["tables"][name]["fields"] != schema_for(name, {})["fields"]
+                ):
+                    raise ValueError("ROOT table type, entry count or schema differs")
         for batch in partition_batches(partition):
             check_slim_links(batch)
             book = rows(batch, "bookkeeping/events")
@@ -439,7 +455,7 @@ def validate_run(output, make_plots=False):
     for sample, info in metadata["samples"].items():
         selected = [c for c in commits if c["sample_id"] == sample]
         events = sum(c["events"] for c in selected)
-        size = sum(t["bytes"] for c in selected for t in c["tables"].values())
+        size = sum(t["bytes"] for c in selected for t in c["files"].values())
         cpu = sum(c.get("cpu_seconds", c["started_elapsed_seconds"]) for c in selected)
         if events:
             projected_bytes += size / events * info["expected_events"]
@@ -457,7 +473,7 @@ def validate_run(output, make_plots=False):
                 if name.startswith(("inputs/", "targets/"))
                 else name.split("/")[0]
             )
-            family_bytes[family] = family_bytes.get(family, 0) + info["bytes"]
+            family_bytes[family] = family_bytes.get(family, 0) + info["compressed_bytes"]
     report = dict(
         status="passed",
         validation_module_sha256=sha256(__file__),
@@ -494,8 +510,8 @@ def validate_run(output, make_plots=False):
             ),
             projected_TiB=projected_bytes / 2**40,
             projection_samples=projections,
-            bytes_by_family=family_bytes,
-            bytes=sum(t["bytes"] for c in commits for t in c["tables"].values()),
+            compressed_tree_bytes_by_family=family_bytes,
+            bytes=sum(t["bytes"] for c in commits for t in c["files"].values()),
             peak_worker_rss_MiB=max((c["max_rss_MiB"] for c in commits), default=0),
         ),
         source_partitions=[c["source_id"] for c in commits],

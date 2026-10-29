@@ -5,9 +5,11 @@ import json
 import math
 from dataclasses import replace
 
+import awkward as ak
 import h5py
-import pyarrow.parquet as pq
+import numpy as np
 import pytest
+import uproot
 
 from heptokens.labels.analysis import detector_batches, scan_table
 from heptokens.labels.cli import account_weights, detector_catalogs
@@ -26,6 +28,7 @@ from heptokens.labels.physics import (
 )
 from heptokens.labels.produce import produce_source
 from heptokens.labels.source import atomic_json, iter_events, sha256, truth_fingerprint
+from heptokens.labels.tables import SCHEMAS, TableWriters, iter_table, open_root, read_rows
 from heptokens.labels.validation import check_tree, validate_run
 
 
@@ -304,10 +307,10 @@ def test_slim_end_to_end_and_signed_normalization(campaign, tmp_path):
     out = tmp_path / "labels"
     result = produce_source(campaign, out, 0, Config(), normalization=normalization)
     assert result["events"] == 2
-    assert result["tables"]["truth/nodes.parquet"]["rows"] == 0
-    jets = pq.read_table(out / "source-00000/truth/jets.parquet").to_pylist()
+    assert result["tables"]["truth/nodes"]["rows"] == 0
+    jets = read_rows(out / "source-00000", "truth/jets")
     assert all(j["heavy_hadron_flavor"] == "unknown" and not j["parton_flavor_valid"] for j in jets)
-    book = pq.read_table(out / "source-00000/bookkeeping/events.parquet").to_pylist()
+    book = read_rows(out / "source-00000", "bookkeeping/events")
     assert [r["physical_weight_pb"] for r in book] == [20.0, -10.0]
     assert all(r["generator_ht"] is None and not r["generator_ht_valid"] for r in book)
     report = validate_run(out)
@@ -325,7 +328,7 @@ def test_slim_end_to_end_and_signed_normalization(campaign, tmp_path):
 def test_optional_trees_and_missing_flavor(campaign, tmp_path):
     out = tmp_path / "trees"
     result = produce_source(campaign, out, 0, Config(include_trees=True))
-    assert result["tables"]["truth/nodes.parquet"]["rows"] == 10
+    assert result["tables"]["truth/nodes"]["rows"] == 10
     report = validate_run(out)
     assert report["trees_valid"]
     assert (
@@ -353,18 +356,32 @@ def test_slim_awkward_reader_separates_inputs_and_bookkeeping(campaign, tmp_path
     out = tmp_path / "analysis"
     produce_source(campaign, out, 0, Config())
     validate_run(out)
-    batches = list(detector_batches(out, "CMS"))
+    batches = list(detector_batches(out, "CMS", batch_size=1))
     assert sum(len(b["inputs"]["jets"]) for b in batches) == 2
     import awkward as ak
 
-    assert ak.to_list(ak.num(batches[0]["inputs"]["constituents"])) == [3, 3]
+    assert [ak.to_list(ak.num(b["inputs"]["constituents"])) for b in batches] == [[3], [3]]
     assert set(batches[0]) == {"inputs", "keys"}
-    assert scan_table(
-        out, "bookkeeping/events", columns=["original_weight"]
-    ).to_table().column_names == ["original_weight"]
+    scanned = list(scan_table(out, "bookkeeping/events", columns=["original_weight"]))
+    assert scanned[0].fields == ["original_weight"]
+    assert ak.to_list(scanned[0].original_weight) == [2.0, -1.0]
     detector_catalogs(out)
-    assert (out / "CMS/source-00000/jets.parquet").is_file()
-    assert (out / "ATLAS/source-00000/constituents.parquet").is_file()
+    assert (out / "CMS/source-00000.root").is_file()
+    assert (out / "ATLAS/source-00000.root").is_file()
+    with uproot.open(
+        out / "CMS/source-00000.root", handler=uproot.source.file.MemmapSource
+    ) as file:
+        assert file["inputs/CMS/jets"].classname == "TTree"
+        assert len(file["inputs/CMS/jets"].arrays(["jet_id", "px"], library="ak")) == 2
+        assert (
+            sum(
+                len(a)
+                for a in file["inputs/CMS/jets"].iterate(
+                    ["jet_id", "constituent_indices"], step_size=1, library="ak"
+                )
+            )
+            == 2
+        )
     assert detector_catalogs(out)["sources"] == 1
 
 
@@ -419,3 +436,90 @@ def test_plot_and_reader_changes_do_not_invalidate_production(monkeypatch):
     after = producer.code_provenance()
     assert before["software_id"] == after["software_id"]
     assert before["module_sha256"] != after["module_sha256"]
+
+
+def test_root_missing_empty_jagged_and_numeric_precision(tmp_path):
+    writer = TableWriters(tmp_path, {"test": "ROOT roundtrip"})
+    records = [
+        dict(
+            event_id="a",
+            event=2**64 - 1,
+            generator_weights=None,
+            original_weight=1.123456789012345,
+            lhe_weights_json=None,
+        ),
+        dict(
+            event_id="b", event=0, generator_weights=[], original_weight=-2.0, lhe_weights_json=""
+        ),
+        dict(event_id="c", event=42, generator_weights=[1.0, -0.125], original_weight=0.0),
+    ]
+    writer.write({"bookkeeping/events": records[:2]})
+    writer.write(
+        {"bookkeeping/events": records[2:], "truth/particles": [dict(event_id="a", px=1.123456789)]}
+    )
+    writer.close()
+    writer.close()
+    with open_root(tmp_path / "labels.root") as file:
+        assert all(file[name].classname == "TTree" for name in SCHEMAS)
+        raw = file["bookkeeping/events"].arrays(library="ak")
+        assert ak.to_list(raw.generator_weights__present) == [False, True, True]
+        assert ak.to_list(raw.generator_weights) == [[], [], [1.0, -0.125]]
+        assert ak.to_numpy(raw.event).dtype == np.dtype("uint64")
+        assert ak.to_numpy(raw.original_weight).dtype == np.dtype("float64")
+        assert file["truth/nodes"].num_entries == 0
+        assert "constituent_indices" in file["truth/nodes"].keys()
+        particles = file["truth/particles"].arrays(["px"], library="np")
+        assert particles["px"].dtype == np.dtype("float32")
+    decoded = read_rows(tmp_path, "bookkeeping/events")
+    assert [r["generator_weights"] for r in decoded] == [None, [], [1.0, -0.125]]
+    assert [r["lhe_weights_json"] for r in decoded] == [None, "", None]
+    assert decoded[0]["original_weight"] == records[0]["original_weight"]
+    assert decoded[0]["event"] == 2**64 - 1
+    chunks = list(iter_table(tmp_path, "bookkeeping/events", ["event_id"], batch_size=1))
+    assert [ak.to_list(b.event_id) for b in chunks] == [["a"], ["b"], ["c"]]
+    assert all(b.fields == ["event_id"] for b in chunks)
+
+
+def test_root_corruption_rejected_by_validation_and_resume(campaign, tmp_path):
+    out = tmp_path / "corruption"
+    produce_source(campaign, out, 0, Config())
+    file = out / "source-00000/labels.root"
+    with file.open("ab") as stream:
+        stream.write(b"corrupt")
+    with pytest.raises(ValueError, match="Changed sidecar"):
+        validate_run(out)
+    with pytest.raises(ValueError, match="checksum mismatch"):
+        produce_source(campaign, out, 0, Config())
+    assert not (out / "READY.json").exists()
+
+
+def test_root_zero_selected_jets_retains_event_coverage(campaign, tmp_path):
+    out = tmp_path / "empty-jets"
+    result = produce_source(campaign, out, 0, Config(jet_min_pt=1e9))
+    assert result["events"] == 2
+    assert result["tables"]["truth/jets"]["rows"] == 0
+    assert result["tables"]["inputs/CMS/constituents"]["rows"] == 0
+    assert validate_run(out)["unique_events"] == 2
+    assert list(detector_batches(out, "CMS")) == []
+    with open_root(out / "source-00000/labels.root") as file:
+        assert file["inputs/ATLAS/events"].num_entries == 2
+        assert file["truth/jets"].num_entries == 0
+    assert not list(out.rglob("*.parquet"))
+
+
+def test_root_reader_and_producer_reject_legacy_output_contract(campaign, tmp_path):
+    out = tmp_path / "legacy-schema"
+    produce_source(campaign, out, 0, Config())
+    validate_run(out)
+    metadata = json.loads((out / "metadata.json").read_text())
+    metadata["contract"]["schema"] = "qcd-labels-v1"
+    atomic_json(out / "metadata.json", metadata)
+    ready = json.loads((out / "READY.json").read_text())
+    ready["schema"] = "qcd-labels-v1"
+    atomic_json(out / "READY.json", ready)
+    with pytest.raises(ValueError, match="Unsupported label output schema"):
+        validate_run(out)
+    with pytest.raises(ValueError, match="Unsupported label output schema"):
+        list(scan_table(out, "bookkeeping/events"))
+    with pytest.raises(ValueError, match="differs"):
+        produce_source(campaign, out, 0, Config())

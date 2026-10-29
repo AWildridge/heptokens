@@ -62,6 +62,12 @@ The QCD label producer similarly needs a verified local `--campaign` tree with
 committed sources. Passing an EOS URL directly to these local readers is
 unsupported; remote staging and validation are separate operations.
 
+New QCD label outputs use one `labels.root` per source with separate typed
+TTrees, readable through uproot. Physics definitions and missing-target masks
+are documented in [QCD label production](qcd-label-production.md). Earlier
+Parquet pilot measurements remain historical; ROOT scale estimates need a
+representative benchmark before dispatch.
+
 `tools/replay_runtime.py` validates execution context, limits CPU processes and
 serializes transfers. The replay, scratch and transfer modules retain identity,
 accounting and checksum checks; interrupted or corrupt transfers must preserve

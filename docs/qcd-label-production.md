@@ -1,9 +1,15 @@
 # Slim CMS/ATLAS QCD analysis dataset
 
-The default produces a self-contained, column-prunable dataset on scratch,
+The default produces ROOT files with column-prunable TTrees readable by uproot,
 with reconstructed inputs, truth targets and bookkeeping in separate tables.
 No models are trained. C/A trees and angular targets are **postponed by default**
 at the user's request; enable them only in a separate, versioned production.
+
+The current output contract is `qcd-labels-root-v2`: one `labels.root` per source
+partition. Use a new output directory, such as `slim-root-v2`. The earlier
+4,000-event Parquet validation remains a historical v1 result; its size and
+runtime projections do not validate the ROOT layout. A representative ROOT
+pilot and Purdue I/O/storage benchmark are required before full production.
 
 ## Locations and status
 
@@ -34,11 +40,11 @@ the **entire campaign** is complete. A validation prefix is not the full dataset
 Never combine different output versions without checking their contracts.
 Validation also creates `CMS/` and `ATLAS/` directories with relative source
 links and small catalogs, making each detector's inputs directly accessible
-without duplicating data. Truth and bookkeeping remain in separate directories.
+without duplicating data. Truth and bookkeeping remain in separate ROOT TTrees.
 
-The initial slim benchmark used 256 events and 3.48 MB, extrapolating to about
-2.6 TiB for the 210,542,000-event campaign. Small files have extra overhead;
-the larger validation run's `resources` report supersedes this estimate.
+Historical v1 Parquet benchmarks and projections are recorded in
+[the original run note](qcd-label-run-20261029.md). ROOT storage and throughput
+must be measured separately, including TTree/basket and file metadata overhead.
 Scratch is purgeable; retain code, locks, provenance and validation reports
 durably and regenerate or explicitly back up the working set.
 
@@ -226,11 +232,11 @@ the repository's `src` directory is added by the launcher. It requires no torch.
 ```bash
 bash tools/run_qcd_labels.sh produce \
   --campaign /path/to/QCD-multijet-paired/raw \
-  --output /path/to/scratch/slim-v1 \
+  --output /path/to/scratch/slim-root-v2 \
   --source-task 252 --source-task 1152 --source-task 2546 --source-task 4515 \
   --max-chunks 1 --events-per-chunk 1000 --workers 2
 
-bash tools/run_qcd_labels.sh validate --output /path/to/scratch/slim-v1 --plots
+bash tools/run_qcd_labels.sh validate --output /path/to/scratch/slim-root-v2 --plots
 ```
 
 The login-node guard allows at most four sources, one chunk each, up to
@@ -241,16 +247,49 @@ a fake Slurm environment variable.
 Redraw plots from saved histogram data without reclustering or revalidating:
 
 ```bash
-bash tools/run_qcd_labels.sh plot --report /path/to/scratch/slim-v1/validation.json \
+bash tools/run_qcd_labels.sh plot --report /path/to/scratch/slim-root-v2/validation.json \
   --output /path/to/plots
 ```
 
 Production cache identity excludes plotting and reader modules. Their changes
 do not invalidate the expensive label stage; validation records its own code hash.
 
-Tables are Parquet, organized as `source-NNNNN/{bookkeeping,truth,inputs/CMS,
-inputs/ATLAS,targets/CMS,targets/ATLAS}/TABLE.parquet`. Arrow schemas include
-units and configuration/software hashes, including typed empty postponed tables.
+Each `source-NNNNN/labels.root` contains TTrees named `bookkeeping/events`,
+`truth/{events,jets,particles,nodes,angles}`, `inputs/{CMS,ATLAS}/TABLE`, and
+`targets/{CMS,ATLAS}/TABLE`. `label_schema` is a JSON TObjString containing field
+types, units and configuration/software hashes. Deferred/empty tables still
+exist as typed, zero-entry TTrees. Each source's `COMMIT.json` records the ROOT
+file SHA256/size and each TTree's row count. Publication remains atomic.
+
+Every logical field has a boolean `FIELD__present` branch: false means missing.
+Its stored zero, empty string or empty-list placeholder must be masked. A valid
+empty list has presence=true. These storage masks are separate from physics
+validity flags such as `parton_flavor_valid` and `normalization_valid`.
+`read_arrays`/`scan_table` restore missing values as Awkward options; direct
+uproot users must apply the presence branches themselves. Floating-point widths
+remain float32 for particle/constituent P4 and float64 for jet/event quantities
+and weights; run/lumi/event remain uint64. Jagged membership and variation-weight
+branches retain their complete lists.
+
+Read the ROOT files directly with uproot, selecting only needed branches:
+
+```python
+import uproot
+
+# Local verified staging; the explicit handler follows the Purdue local-ROOT policy.
+with uproot.open('/path/to/slim-root-v2/source-00252/labels.root',
+                 handler=uproot.source.file.MemmapSource) as f:
+    for jets in f['inputs/CMS/jets'].iterate(
+            ['event_id', 'jet_id', 'px', 'py', 'pz', 'energy', 'px__present'],
+            step_size='64 MB', library='ak'):
+        pass
+```
+
+The source ROOT layout can also be read over EOS using uproot's remote transport
+when the files have been published and authentication is available. Production
+input staging still follows the Purdue protocol above; this change does not
+implement direct remote reading of the original HDF5/HepMC campaign.
+
 Reconstructed `object_type` is a Delphes class code (1 Track, 2 Tower,
 3 GenParticle, 4 Muon, 5 Electron, 6 Photon), never a truth PDG label.
 Use column pruning and small Awkward batches:
@@ -258,15 +297,15 @@ Use column pruning and small Awkward batches:
 ```python
 from heptokens.labels.analysis import detector_batches, scan_table
 
-for batch in detector_batches('/path/to/scratch/slim-v1', 'CMS'):
+for batch in detector_batches('/path/to/scratch/slim-root-v2', 'CMS'):
     jets = batch['inputs']['jets']             # vector Momentum4D
     constituents = batch['inputs']['constituents']  # full ragged arrays
     keys = batch['keys']                       # IDs, outside feature arrays
     # No truth targets, weights or sample IDs are included in these inputs.
 
-book = scan_table('/path/to/scratch/slim-v1', 'bookkeeping/events',
+book = scan_table('/path/to/scratch/slim-root-v2', 'bookkeeping/events',
                   columns=['event_id', 'sample_id', 'split', 'original_weight'])
-for record_batch in book.to_batches():
+for record_batch in book:
     pass  # join bookkeeping explicitly when doing weighted analysis
 ```
 

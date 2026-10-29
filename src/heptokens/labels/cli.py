@@ -11,6 +11,7 @@ from pathlib import Path
 from .physics import Config, event_identity
 from .produce import produce_source, utc_now
 from .source import atomic_json, read_json, sample_records, sha256, source_root
+from .tables import ROOT_FILENAME
 
 
 def configure(path):
@@ -36,22 +37,23 @@ def detector_catalogs(output):
         directory.mkdir(exist_ok=True)
         records = []
         for source in committed:
-            link = directory / source.name
-            relative = Path("..") / source.name / "inputs" / detector
+            link = directory / (source.name + ".root")
+            relative = Path("..") / source.name / ROOT_FILENAME
             if link.is_symlink():
                 if link.resolve() != (directory / relative).resolve():
                     raise ValueError("Detector catalog contains a conflicting symlink")
             elif link.exists():
                 raise ValueError("Detector catalog would overwrite an existing path")
             else:
-                link.symlink_to(relative, target_is_directory=True)
+                link.symlink_to(relative)
             records.append(
                 dict(
                     source_id=int(source.name.split("-")[1]),
                     detector=detector,
-                    jets=str(Path(source.name) / "jets.parquet"),
-                    constituents=str(Path(source.name) / "constituents.parquet"),
-                    events=str(Path(source.name) / "events.parquet"),
+                    file=link.name,
+                    jets=f"{link.name}:inputs/{detector}/jets",
+                    constituents=f"{link.name}:inputs/{detector}/constituents",
+                    events=f"{link.name}:inputs/{detector}/events",
                 )
             )
         atomic_json(
@@ -65,8 +67,8 @@ def detector_catalogs(output):
         )
         (directory / "README.txt").write_text(
             f"{detector} selected reconstructed jets, constituents and event kinematics.\n"
-            "Source directories are relative symlinks into validated input partitions.\n"
-            "Truth targets and bookkeeping remain separate under source-NNNNN/.\n"
+            "ROOT files are relative symlinks into validated source partitions.\n"
+            "Catalog entries select input TTrees; truth and bookkeeping use separate trees.\n"
         )
     return dict(status="complete", detectors=["CMS", "ATLAS"], sources=len(committed))
 

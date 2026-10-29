@@ -1,15 +1,21 @@
-"""Explicit Arrow schemas keep empty and entirely unavailable targets typed."""
+"""Typed ROOT TTrees, explicit missingness, and streaming uproot access."""
 
+import json
 from pathlib import Path
 
-import pyarrow as pa
-import pyarrow.parquet as pq
+import awkward as ak
+import numpy as np
+import uproot
 
-F = pa.float64()
-S = pa.string()
-INT = pa.int64()
-B = pa.bool_()
-F32 = pa.float32()
+from . import SCHEMA_VERSION
+
+ROOT_FILENAME = "labels.root"
+
+F = "float64"
+S = "string"
+INT = "int64"
+B = "bool"
+F32 = "float32"
 CARTESIAN = {k: F32 for k in ["px", "py", "pz", "energy"]}
 P4 = {k: F for k in ["px", "py", "pz", "energy", "pt", "eta", "phi", "rapidity", "mass"]}
 P4.update(mass2_raw=F, mass_valid=B)
@@ -29,7 +35,7 @@ NODE = dict(
     jet_id=S,
     node_id=S,
     parent_id=S,
-    constituent_indices=pa.list_(INT),
+    constituent_indices="var * int64",
     is_leaf=B,
     child_hard_id=S,
     child_soft_id=S,
@@ -62,15 +68,15 @@ SCHEMAS = {
         sample_id=S,
         source_id=INT,
         source_uri=S,
-        run=pa.uint64(),
-        lumi=pa.uint64(),
-        event=pa.uint64(),
+        run="uint64",
+        lumi="uint64",
+        event="uint64",
         export_event=INT,
         chunk_id=S,
         delphes_seed=INT,
         split=S,
         original_weight=F,
-        generator_weights=pa.list_(F),
+        generator_weights="var * float64",
         lhe_weights_json=S,
         cross_section_pb=F,
         sample_sum_weights=F,
@@ -87,7 +93,7 @@ SCHEMAS = {
     ),
     "truth/events": dict(
         event_id=S,
-        incoming_pdg_ids=pa.list_(INT),
+        incoming_pdg_ids="var * int64",
         incoming_flavors_valid=B,
         hard_process_id=INT,
         hard_process_valid=B,
@@ -96,7 +102,7 @@ SCHEMAS = {
     "truth/particles": dict(
         event_id=S,
         particle_index=INT,
-        pdg_id=pa.int32(),
+        pdg_id="int32",
         charge=F,
         charge_valid=B,
         status=INT,
@@ -107,22 +113,22 @@ SCHEMAS = {
         generated_mass=F,
         vertex_ct_mm=F,
         vertex_time_valid=B,
-        mother_indices=pa.list_(INT),
+        mother_indices="var * int64",
         ancestry_valid=B,
         **CARTESIAN,
     ),
     "truth/jets": dict(
         event_id=S,
         jet_id=S,
-        constituent_indices=pa.list_(INT),
+        constituent_indices="var * int64",
         multiplicity=INT,
         charged_multiplicity=INT,
         charged_multiplicity_valid=B,
         heavy_hadron_flavor=S,
-        heavy_hadron_pdg_ids=pa.list_(INT),
+        heavy_hadron_pdg_ids="var * int64",
         heavy_hadron_flavor_valid=B,
         parton_flavor=S,
-        parton_pdg_ids=pa.list_(INT),
+        parton_pdg_ids="var * int64",
         parton_flavor_valid=B,
         **P4,
     ),
@@ -136,7 +142,7 @@ for detector in ["CMS", "ATLAS"]:
         detector=S,
         original_index=INT,
         original_split=INT,
-        constituent_indices=pa.list_(INT),
+        constituent_indices="var * int64",
         multiplicity=INT,
         **P4,
     )
@@ -151,8 +157,8 @@ for detector in ["CMS", "ATLAS"]:
         constituent_index=INT,
         stored_index=INT,
         detector=S,
-        object_type=pa.int8(),
-        reco_charge=pa.int8(),
+        object_type="int8",
+        reco_charge="int8",
         **CARTESIAN,
     )
     SCHEMAS[f"inputs/{detector}/nodes"] = {
@@ -180,7 +186,7 @@ for detector in ["CMS", "ATLAS"]:
         event_id=S,
         jet_id=S,
         constituent_index=INT,
-        truth_particle_indices=pa.list_(INT),
+        truth_particle_indices="var * int64",
         association_valid=B,
         species_valid=B,
         ancestry_valid=B,
@@ -189,7 +195,7 @@ for detector in ["CMS", "ATLAS"]:
 
 
 def schema_for(name, metadata):
-    fields = []
+    fields = {}
     for key, dtype in SCHEMAS[name].items():
         unit = (
             "GeV"
@@ -220,34 +226,102 @@ def schema_for(name, metadata):
             if key == "mass2_raw"
             else "1"
         )
-        fields.append(pa.field(key, dtype, metadata={b"unit": unit.encode()}))
-    return pa.schema(fields, metadata={k.encode(): str(v).encode() for k, v in metadata.items()})
+        fields[key] = dict(type=dtype, unit=unit, presence=key + "__present")
+    return dict(fields=fields, provenance=metadata)
+
+
+def branch_arrays(name, rows):
+    """Encode null scalars/lists using a separate boolean presence branch.
+
+    Empty lists and empty strings are valid values. A false __present branch
+    marks a missing value, independently of every physics validity flag.
+    """
+    arrays = {}
+    for key, dtype in SCHEMAS[name].items():
+        values = [row.get(key) for row in rows]
+        arrays[key + "__present"] = np.asarray([v is not None for v in values], dtype=np.bool_)
+        if dtype.startswith("var * "):
+            items = [v if v is not None else [] for v in values]
+            offsets = np.concatenate(([0], np.cumsum([len(v) for v in items], dtype=np.int64)))
+            content = np.asarray([x for v in items for x in v], dtype=dtype[6:])
+            arrays[key] = ak.Array(
+                ak.contents.ListOffsetArray(
+                    ak.index.Index64(offsets), ak.contents.NumpyArray(content)
+                )
+            )
+        elif dtype == "string":
+            arrays[key] = ak.Array([v if v is not None else "" for v in values])
+        else:
+            arrays[key] = np.asarray([v if v is not None else 0 for v in values], dtype=dtype)
+    return arrays
+
+
+def read_arrays(tree, name, columns=None, entry_start=None, entry_stop=None):
+    """Read selected logical columns and restore missing values as Awkward options."""
+    columns = list(SCHEMAS[name]) if columns is None else list(columns)
+    if not columns or any(c not in SCHEMAS[name] for c in columns):
+        raise ValueError(f"Unknown or empty columns for {name}: {columns}")
+    physical = [v for c in columns for v in (c, c + "__present")]
+    raw = tree.arrays(physical, entry_start=entry_start, entry_stop=entry_stop, library="ak")
+    return ak.zip({c: ak.mask(raw[c], raw[c + "__present"]) for c in columns}, depth_limit=1)
+
+
+def open_root(path):
+    # Canonical local ROOT handler: avoid the stalled FSSpecSource observed at Purdue.
+    return uproot.open(
+        path, handler=uproot.source.file.MemmapSource, object_cache=None, array_cache=None
+    )
+
+
+def iter_table(partition, name, columns=None, batch_size=4096):
+    if name not in SCHEMAS or not isinstance(batch_size, int) or batch_size <= 0:
+        raise ValueError("Unknown table or invalid batch size")
+    with open_root(Path(partition) / ROOT_FILENAME) as file:
+        tree = file[name]
+        for start in range(0, tree.num_entries, batch_size):
+            yield read_arrays(tree, name, columns, start, min(start + batch_size, tree.num_entries))
+
+
+def read_rows(partition, name):
+    return [row for batch in iter_table(partition, name) for row in ak.to_list(batch)]
 
 
 class TableWriters:
+    """One ROOT file per source, with a typed TTree per logical table."""
+
     def __init__(self, root, metadata):
         self.root = Path(root)
-        self.writers = {}
-        self.schemas = {name: schema_for(name, metadata) for name in SCHEMAS}
+        self.root.mkdir(parents=True, exist_ok=True)
         self.counts = dict.fromkeys(SCHEMAS, 0)
+        self.closed = False
+        self.file = uproot.recreate(self.root / ROOT_FILENAME, compression=uproot.ZSTD(4))
+        try:
+            self.file["label_schema"] = json.dumps(
+                dict(
+                    schema=SCHEMA_VERSION,
+                    tables={name: schema_for(name, metadata) for name in SCHEMAS},
+                    missingness="Mask placeholder values wherever FIELD__present is false.",
+                ),
+                sort_keys=True,
+            )
+            self.writers = {}
+            for name, schema in SCHEMAS.items():
+                branches = dict(schema)
+                branches.update({key + "__present": "bool" for key in schema})
+                self.writers[name] = self.file.mktree(name, branches)
+        except BaseException:
+            self.close()
+            raise
 
     def write(self, tables):
+        if self.closed:
+            raise ValueError("ROOT writer is closed")
         for name, rows in tables.items():
-            if not rows:
-                continue
-            table = pa.Table.from_pylist(rows, schema=self.schemas[name])
-            if name not in self.writers:
-                path = self.root / (name + ".parquet")
-                path.parent.mkdir(parents=True, exist_ok=True)
-                self.writers[name] = pq.ParquetWriter(path, self.schemas[name], compression="zstd")
-            self.writers[name].write_table(table)
-            self.counts[name] += len(rows)
+            if rows:
+                self.writers[name].extend(branch_arrays(name, rows))
+                self.counts[name] += len(rows)
 
     def close(self):
-        for name, schema in self.schemas.items():
-            if name in self.writers:
-                self.writers[name].close()
-            else:
-                path = self.root / (name + ".parquet")
-                path.parent.mkdir(parents=True, exist_ok=True)
-                pq.write_table(pa.Table.from_pylist([], schema=schema), path, compression="zstd")
+        if not self.closed:
+            self.file.close()
+            self.closed = True

@@ -26,7 +26,7 @@ from .physics import (
     stable_id,
 )
 from .source import atomic_json, iter_events, read_json, sample_records, sha256, source_root
-from .tables import SCHEMAS, TableWriters
+from .tables import ROOT_FILENAME, SCHEMAS, TableWriters, open_root
 
 UNAVAILABLE = {
     "heavy_hadron_flavor": (
@@ -74,7 +74,8 @@ PRODUCTION_PACKAGES = {
     "vector",
     "fastjet",
     "particle",
-    "pyarrow",
+    "hepunits",
+    "uproot",
     "h5py",
     "scipy",
 }
@@ -102,7 +103,8 @@ def code_provenance():
         "vector",
         "fastjet",
         "particle",
-        "pyarrow",
+        "hepunits",
+        "uproot",
         "h5py",
         "scipy",
         "hist",
@@ -125,6 +127,10 @@ def code_provenance():
         if (env / "pixi.toml").exists()
         else None,
         environment_lock_sha256=sha256(env / "pixi.lock") if (env / "pixi.lock").exists() else None,
+        cpu_requirements_sha256=sha256(repo / "environments/labels/requirements-cpu.txt"),
+        environment_reference_role=(
+            "CMS files are repository references; runtime is executable and package_versions"
+        ),
         command_argv=sys.argv,
         hostname=socket.gethostname(),
         slurm_job_id=os.environ.get("SLURM_JOB_ID"),
@@ -416,7 +422,9 @@ def produce_source(
         fcntl.flock(lock, fcntl.LOCK_EX)
         if (target / "COMMIT.json").exists():
             saved = read_json(target / "COMMIT.json")
-            for name, info in saved["tables"].items():
+            if saved["schema"] != SCHEMA_VERSION:
+                raise ValueError("Existing output schema differs; choose a new output")
+            for name, info in saved["files"].items():
                 if sha256(target / name) != info["sha256"]:
                     raise ValueError("Existing sidecar partition checksum mismatch")
             return saved
@@ -448,18 +456,21 @@ def produce_source(
                     for name, rows in tables.items():
                         buffered[name].extend(rows)
                     count += 1
-                    if count % 16 == 0:
+                    if count % 128 == 0:
                         writers.write(buffered)
                         buffered = {name: [] for name in SCHEMAS}
                 writers.write(buffered)
                 buffered = {name: [] for name in SCHEMAS}
             writers.close()
-            table_info = {}
-            for name in SCHEMAS:
-                path = temporary / (name + ".parquet")
-                table_info[name + ".parquet"] = dict(
-                    rows=writers.counts[name], bytes=path.stat().st_size, sha256=sha256(path)
-                )
+            with open_root(temporary / ROOT_FILENAME) as root_file:
+                table_info = {
+                    name: dict(
+                        rows=writers.counts[name], compressed_bytes=root_file[name].compressed_bytes
+                    )
+                    for name in SCHEMAS
+                }
+            path = temporary / ROOT_FILENAME
+            file_info = {ROOT_FILENAME: dict(bytes=path.stat().st_size, sha256=sha256(path))}
             result = dict(
                 status="complete",
                 schema=SCHEMA_VERSION,
@@ -479,6 +490,7 @@ def produce_source(
                 max_rss_MiB=resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
                 created_utc=utc_now(),
                 tables=table_info,
+                files=file_info,
                 synchronization=evidence,
             )
             atomic_json(temporary / "COMMIT.json", result)

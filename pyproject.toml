@@ -24,7 +24,7 @@ heptokens-qcd-labels = "heptokens.labels.cli:main"
 
 [project.optional-dependencies]
 labels = ["fastjet==3.5.2.0", "particle==0.26.0", "hepunits==2.4.2",
-          "vector>=1.6,<2", "numpy>=2,<3", "scipy>=1.14", "pyarrow>=18",
+          "vector>=1.6,<2", "numpy>=2,<3", "scipy>=1.14", "uproot>=5.7,<6",
           "hist>=2.8", "mplhep>=0.4", "matplotlib>=3.9"]
 
 [build-system]

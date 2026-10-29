@@ -2,7 +2,7 @@
 awkward>=2.8,<3
 numpy>=2,<3
 vector>=1.6,<2
-pyarrow>=18
+uproot>=5.7,<6
 h5py>=3.13
 scipy>=1.14
 hist>=2.8
