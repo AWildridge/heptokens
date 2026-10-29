@@ -9,6 +9,11 @@ manifest. All validation and compilation used Slurm compute nodes.
 
 ## Current bulk campaign
 
+For the completed paired QCD campaign's new detector catalogs and versioned
+scratch preprocessing, see [QCD label production](qcd-label-production.md).
+Those four samples are pthat bins, and their stable-only truth cannot supply
+heavy-hadron/parton flavor without additional generator information.
+
 Full four-dataset staging and the all-source CMS/ATLAS replay jobs are submitted.
 See [the storage layout, job IDs, readiness checks and training interfaces](full-dataset-campaign.md).
 The full prepared-data configs point to the dedicated CFS directory under

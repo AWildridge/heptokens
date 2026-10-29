@@ -20,6 +20,12 @@ dependencies = [
 heptokens-train = "heptokens.train:main"
 heptokens-export = "heptokens.export_tokens:main"
 heptokens-export-latents = "heptokens.export_latents:main"
+heptokens-qcd-labels = "heptokens.labels.cli:main"
+
+[project.optional-dependencies]
+labels = ["fastjet==3.5.2.0", "particle==0.26.0", "hepunits==2.4.2",
+          "vector>=1.6,<2", "numpy>=2,<3", "scipy>=1.14", "pyarrow>=18",
+          "hist>=2.8", "mplhep>=0.4", "matplotlib>=3.9"]
 
 [build-system]
 requires = ["hatchling"]
