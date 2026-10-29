@@ -28,7 +28,7 @@ pip install heptokens
 Or, for development with a [Pixi](https://pixi.sh/latest/installation/)-managed environment:
 
 ```bash
-git clone <repo>
+git clone --branch fnal-main https://github.com/AWildridge/heptokens.git
 cd heptokens
 pixi shell          # activates the environment
 ```
@@ -371,3 +371,5 @@ Jeffrey Krupa, Samuel Klein, Michael Kagan
 Dataset setup on Perlmutter: [Aspen Open Jets, JetClass and JetClass-II](docs/datasets-perlmutter.md).
 Includes lazy loading, split-preserving samples, full-shard staging commands,
 and detector provenance/default-card replay results.
+
+Purdue CPU replay, transfer and pileup diagnostics: [scope, evidence and validation](docs/purdue-replay.md).

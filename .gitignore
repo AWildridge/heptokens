@@ -38,3 +38,9 @@ results/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Local validation, credentials and staged detector data
+.pytest_cache/
+credentials/
+*.pileup
+*.root

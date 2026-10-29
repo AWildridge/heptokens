@@ -1,5 +1,4 @@
 import importlib.util
-import inspect
 import json
 import os
 from pathlib import Path
@@ -7,21 +6,16 @@ import sys
 
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / 'heptokens/tools'))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tools'))
 import replay_scratch_budget as budget
 
 
 def load_helper():
-    path = ROOT / 'heptokens/tools/replay_worker_local.py'
+    path = ROOT / 'tools/replay_worker_local.py'
     spec = importlib.util.spec_from_file_location('scratch_budget_subject', path)
     helper = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(helper)
-    if 'pinned_credits' not in inspect.signature(helper.admit_disk).parameters:
-        path = ROOT / 'purdue-setup/candidates/scratch-credit/tools/replay_worker_local.py'
-        spec = importlib.util.spec_from_file_location('scratch_budget_candidate', path)
-        helper = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(helper)
     return helper
 
 

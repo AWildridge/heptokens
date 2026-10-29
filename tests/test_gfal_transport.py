@@ -1,9 +1,11 @@
 import errno
+from pathlib import Path
 import subprocess
 import sys
 import threading
 import types
 import pytest
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 import gfal_transport as transport
 
 

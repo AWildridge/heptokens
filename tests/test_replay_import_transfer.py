@@ -3,7 +3,7 @@ import hashlib,json,sys
 from pathlib import Path
 from types import SimpleNamespace
 import pytest
-ROOT=Path(__file__).resolve().parents[2];sys.path.insert(0,str(ROOT/'heptokens/tools'))
+ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT/'tools'))
 from replay_bundle import pack,digest
 from replay_import_transfer import import_one,load_snapshot,verify_import,summary,sha,safe_path,digest_copy
 from replay_local_handoff import begin_export,export_chunk,end_export,store_ack
@@ -112,7 +112,7 @@ def test_worker_lease_protects_stream_and_original_is_retained(tmp_path,monkeypa
 
 def test_offline_receive_seed_import_and_reverify_cli(tmp_path):
     import subprocess
-    origin,row,path,snapshot=fixture(tmp_path);root=tmp_path/'imported';tools=ROOT/'heptokens/tools/replay_import_transfer.py'
+    origin,row,path,snapshot=fixture(tmp_path);root=tmp_path/'imported';tools=ROOT/'tools/replay_import_transfer.py'
     for name,item in row['objects'].items():
         if name=='source.tar':item['url']='worker-scratch://attempt/source.tar';continue
         folder=tmp_path/'local-objects/00007';folder.mkdir(parents=True,exist_ok=True)
@@ -128,7 +128,7 @@ def test_offline_receive_seed_import_and_reverify_cli(tmp_path):
 def test_dry_run_does_not_create_destination(tmp_path):
     import subprocess
     origin,row,path,snapshot=fixture(tmp_path);target=tmp_path/'absent'
-    p=subprocess.run([sys.executable,str(ROOT/'heptokens/tools/replay_import_transfer.py'),'pull','--manifest',str(path),'--root',str(target),'--dry-run'],capture_output=True,text=True,check=True)
+    p=subprocess.run([sys.executable,str(ROOT/'tools/replay_import_transfer.py'),'pull','--manifest',str(path),'--root',str(target),'--dry-run'],capture_output=True,text=True,check=True)
     assert json.loads(p.stdout)['network_connections']==0 and not target.exists()
 
 
@@ -241,7 +241,7 @@ def test_eviction_evidence_cannot_rebind_to_another_source(tmp_path,monkeypatch,
 def test_cli_prune_resume_and_independent_verification(tmp_path):
     import subprocess
     origin,row,path,snapshot=fixture(tmp_path);root=tmp_path/'imported'
-    command=[sys.executable,str(ROOT/'heptokens/tools/replay_import_transfer.py'),
+    command=[sys.executable,str(ROOT/'tools/replay_import_transfer.py'),
              '--manifest',str(path),'--root',str(root),'--workers','1','--stable-seconds','1']
     def run(mode,*extra):
         return subprocess.run([command[0],command[1],mode,*command[2:],*extra],capture_output=True,text=True,check=True)
@@ -257,7 +257,7 @@ def test_cli_verifier_respects_source_lock(tmp_path):
     import_one(path,root,row,stable_seconds=0)
     with (root/'.source-00007.lock').open('a+') as lock:
         fcntl.flock(lock,fcntl.LOCK_EX)
-        result=subprocess.run([sys.executable,str(ROOT/'heptokens/tools/replay_import_transfer.py'),
+        result=subprocess.run([sys.executable,str(ROOT/'tools/replay_import_transfer.py'),
             'verify','--manifest',str(path),'--root',str(root),'--stable-seconds','1'],capture_output=True,text=True)
     assert result.returncode!=0
     assert (root/'objects/00007/source.tar').exists()

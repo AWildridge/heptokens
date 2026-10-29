@@ -6,7 +6,9 @@ from pathlib import Path
 import sys
 import pytest
 ROOT=Path(__file__).resolve().parents[2]
-sys.path[:0]=[str(ROOT/'purdue-setup'),str(ROOT/'heptokens/tools')]
+sys.path[:0]=[str(ROOT/'purdue-setup'),str(Path(__file__).resolve().parents[1]/'tools')]
+if not (ROOT/'purdue-setup/storage_watchdog.py').is_file():
+    pytest.skip('Requires the separate Purdue AF site checkout', allow_module_level=True)
 spec=importlib.util.spec_from_file_location('storage_recovery_controls',ROOT/'purdue-setup/storage_watchdog.py')
 watch=importlib.util.module_from_spec(spec);spec.loader.exec_module(watch)
 
