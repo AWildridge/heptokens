@@ -173,6 +173,13 @@ are joins through truth IDs; pT rank does not establish correspondence.
 
 All missing targets have explicit masks/reasons in metadata and tables:
 
+The original MiniAOD/AOD files retain more information than the compressed
+stable-particle replay. A bounded original-input audit and a generator-only
+recovery proposal are documented in
+[generator ancestry recovery](qcd-generator-ancestry-recovery.md). The proposal
+preserves the existing reconstructed events; flavor targets remain masked until
+the new extraction and association pipeline is implemented and validated.
+
 - Heavy-hadron flavor: no decayed b/c hadrons or ancestry are retained.
   Never classify their stable daughters or reconstructed b-tags as truth flavor.
   A future re-export should retain terminal weakly decaying b/c hadrons and
