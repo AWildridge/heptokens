@@ -16,6 +16,7 @@ from pathlib import Path
 from . import SCHEMA_VERSION
 from .physics import (
     ca_tree,
+    cartesian_fields,
     charge,
     common_jets,
     event_kinematics,
@@ -209,7 +210,7 @@ def event_tables(ev, sample, cfg, normalization=None):
                 vertex_time_valid=False,
                 mother_indices=None,
                 ancestry_valid=False,
-                **p4_fields(p["p4"]),
+                **cartesian_fields(p["p4"]),
             )
         )
     tables["truth/jets"] = truth_jets
@@ -260,7 +261,7 @@ def event_tables(ev, sample, cfg, normalization=None):
                         detector=detector,
                         object_type=int(kind),
                         reco_charge=int(q),
-                        **p4_fields(p4),
+                        **cartesian_fields(p4),
                     )
                 )
                 tables[f"targets/{detector}/object_truth"].append(

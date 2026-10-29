@@ -14,6 +14,7 @@ from heptokens.labels.cli import account_weights
 from heptokens.labels.physics import (
     Config,
     ca_tree,
+    cartesian_fields,
     charge,
     common_jets,
     event_identity,
@@ -393,3 +394,9 @@ def test_jet_identity_is_independent_of_tree_or_matching_options():
 def test_config_requires_explicit_boolean_for_expensive_stage():
     with pytest.raises(ValueError, match="boolean"):
         Config(include_trees="false")
+
+
+def test_cartesian_slim_path_preserves_components_exactly():
+    p = [100.25, -3.5, 4.25, 101.0]
+    full = p4_fields(p)
+    assert cartesian_fields(p) == {k: full[k] for k in ["px", "py", "pz", "energy"]}

@@ -269,6 +269,8 @@ def iter_events(chunk, cfg, limit=None, expected_source=None):
                             constituent_start=a,
                         )
                     )
+                    if not np.isfinite(jets[-1]["constituent_p4"]).all():
+                        raise ValueError("Nonfinite reconstructed constituent P4")
                 reco[d] = dict(jets=jets, original_split=int(f["events/split"][row]))
             yield dict(
                 event_id=event_id,

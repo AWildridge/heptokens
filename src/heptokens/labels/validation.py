@@ -168,6 +168,59 @@ def check_tree(nodes, jets):
                     raise ValueError("Tree four-momentum conservation failed")
 
 
+def check_slim_links(batch):
+    """Validate species/membership joins without assuming reco P4 sums equal jets."""
+    event_ids = {r["event_id"] for r in batch["bookkeeping/events"]}
+    if {r["event_id"] for r in batch["truth/events"]} != event_ids:
+        raise ValueError("Truth event-table coverage differs from bookkeeping")
+    particles = {(p["event_id"], p["particle_index"]): p for p in batch["truth/particles"]}
+    if len(particles) != len(batch["truth/particles"]):
+        raise ValueError("Duplicate truth particle key")
+    for jet in batch["truth/jets"]:
+        keys = [(jet["event_id"], i) for i in jet["constituent_indices"]]
+        if len(keys) != jet["multiplicity"] or len(set(keys)) != len(keys):
+            raise ValueError("Truth jet constituent multiplicity is inconsistent")
+        if any(k not in particles for k in keys):
+            raise ValueError("Truth jet has dangling particle membership")
+        constituents = [particles[k] for k in keys]
+        total = np.sum([[p[k] for k in ["px", "py", "pz", "energy"]] for p in constituents], axis=0)
+        if not np.allclose(
+            total, [jet[k] for k in ["px", "py", "pz", "energy"]], rtol=1e-5, atol=1e-3
+        ):
+            raise ValueError("Truth jet P4 differs from its saved constituents")
+        all_charges = all(p["charge_valid"] for p in constituents)
+        if jet["charged_multiplicity_valid"] != all_charges:
+            raise ValueError("Charged multiplicity validity is inconsistent")
+        if all_charges and jet["charged_multiplicity"] != sum(
+            p["charge"] != 0 for p in constituents
+        ):
+            raise ValueError("Charged multiplicity differs from truth charges")
+    for detector in ["CMS", "ATLAS"]:
+        if {r["event_id"] for r in batch[f"inputs/{detector}/events"]} != event_ids:
+            raise ValueError("Reco event-table coverage differs from bookkeeping")
+        constituents = batch[f"inputs/{detector}/constituents"]
+        keys = {(r["jet_id"], r["constituent_index"]) for r in constituents}
+        if len(keys) != len(constituents):
+            raise ValueError("Duplicate reconstructed constituent membership key")
+        expected = {
+            (r["jet_id"], i)
+            for r in batch[f"inputs/{detector}/jets"]
+            for i in r["constituent_indices"]
+        }
+        if keys != expected:
+            raise ValueError("Reco jet membership differs from constituent table")
+        associations = batch[f"targets/{detector}/object_truth"]
+        if {(r["jet_id"], r["constituent_index"]) for r in associations} != keys:
+            raise ValueError("Reco object-target coverage is incomplete")
+        for row in associations:
+            if not row["association_valid"] and row["truth_particle_indices"] is not None:
+                raise ValueError("Invalid association has unmasked truth indices")
+        truth = {r["jet_id"]: r for r in batch["truth/jets"]}
+        for m in batch[f"targets/{detector}/jet_matches"]:
+            if m["matched"] and truth[m["truth_jet_id"]]["event_id"] != m["event_id"]:
+                raise ValueError("Jet match crosses generator events")
+
+
 def validate_run(output, make_plots=False):
     output = Path(output)
     metadata = read_json(output / "metadata.json")
@@ -184,6 +237,7 @@ def validate_run(output, make_plots=False):
             if sha256(partition / name) != info["sha256"]:
                 raise ValueError(f"Changed sidecar {partition / name}")
         for batch in partition_batches(partition):
+            check_slim_links(batch)
             book = rows(batch, "bookkeeping/events")
             by_event = {r["event_id"]: r for r in book}
             if len(by_event) != len(book):
@@ -415,7 +469,7 @@ def validate_run(output, make_plots=False):
         trees_valid=True if cfg["include_trees"] else None,
         deferred_targets=metadata.get("deferred_targets", []),
         campaign_expected_events=n_expected,
-        campaign_complete=n_produced == n_expected
+        campaign_complete=total_events == n_expected
         and len(commits) == metadata["source_files"]
         and all(c["complete_source"] for c in commits),
         selection_variable="generator_pthat (NOT HT)",

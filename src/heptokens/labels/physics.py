@@ -131,6 +131,11 @@ def p4_fields(p4):
     )
 
 
+def cartesian_fields(p4):
+    """Original components only; do not compute discarded derived quantities."""
+    return dict(px=float(p4[0]), py=float(p4[1]), pz=float(p4[2]), energy=float(p4[3]))
+
+
 def p4_array(rows):
     arr = np.asarray(rows, dtype=np.float64).reshape(-1, 4)
     return ak.zip(
@@ -377,10 +382,11 @@ def event_kinematics(jets):
             if a["rapidity"] is None or b["rapidity"] is None
             else a["rapidity"] - b["rapidity"]
         )
+        mass = p4_fields(p)["mass"]
         result.update(
-            dijet_mass=p4_fields(p)["mass"],
+            dijet_mass=mass,
             dijet_delta_y=dy,
             dijet_delta_phi=math.remainder(a["phi"] - b["phi"], 2 * math.pi),
-            dijet_valid=dy is not None,
+            dijet_valid=dy is not None and mass is not None,
         )
     return result
