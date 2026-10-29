@@ -228,9 +228,21 @@ The login-node guard allows at most four sources, one chunk each, up to
 not appropriate for a shared login node. Do not bypass this guard by setting
 a fake Slurm environment variable.
 
+Redraw plots from saved histogram data without reclustering or revalidating:
+
+```bash
+bash tools/run_qcd_labels.sh plot --report /path/to/scratch/slim-v1/validation.json \
+  --output /path/to/plots
+```
+
+Production cache identity excludes plotting and reader modules. Their changes
+do not invalidate the expensive label stage; validation records its own code hash.
+
 Tables are Parquet, organized as `source-NNNNN/{bookkeeping,truth,inputs/CMS,
 inputs/ATLAS,targets/CMS,targets/ATLAS}/TABLE.parquet`. Arrow schemas include
 units and configuration/software hashes, including typed empty postponed tables.
+Reconstructed `object_type` is a Delphes class code (1 Track, 2 Tower,
+3 GenParticle, 4 Muon, 5 Electron, 6 Photon), never a truth PDG label.
 Use column pruning and small Awkward batches:
 
 ```python
@@ -293,6 +305,13 @@ global sum-of-weights/duplicate accounting, full validation scans, and
 especially optional C/A trees/full membership output. Restoring missing
 pruned ancestry or Delphes TRefs requires source re-export or replay; it
 cannot be recovered by an Awkward transform of the current compact files.
+
+`tools/qcd_labels_validate.sbatch` supplies a separate single-CPU/4-GiB
+validation job with a conservative 24-hour limit. Submit it with an `afterok`
+dependency on the completed producer array, using Purdue's actual account and
+partition. The global identity check creates a temporary SQLite database
+under the output directory, potentially tens of GB for the full campaign;
+the database is removed after successful validation.
 
 Run focused tests with the label Python/overlay:
 

@@ -230,6 +230,9 @@ def main():
     v = sub.add_parser("validate")
     v.add_argument("--output", type=Path, required=True)
     v.add_argument("--plots", action="store_true")
+    plot = sub.add_parser("plot")
+    plot.add_argument("--report", type=Path, required=True)
+    plot.add_argument("--output", type=Path, required=True)
     a = sub.add_parser("account-weights")
     a.add_argument("--campaign", type=Path, required=True)
     a.add_argument("--output", type=Path, required=True)
@@ -242,6 +245,11 @@ def main():
 
         report = validate_run(args.output, args.plots)
         result = {k: v for k, v in report.items() if k not in ["summaries", "unavailable"]}
+    elif args.command == "plot":
+        from .validation import plot_report
+
+        plot_report(args.report, args.output)
+        result = dict(status="complete", report=str(args.report), plots=str(args.output))
     elif args.command == "account-weights":
         if not os.environ.get("SLURM_JOB_ID") and args.source_task is None:
             p.error(

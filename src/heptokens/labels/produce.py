@@ -67,6 +67,18 @@ UNAVAILABLE = {
     ),
 }
 
+PRODUCTION_MODULES = {"__init__.py", "physics.py", "source.py", "tables.py", "produce.py"}
+PRODUCTION_PACKAGES = {
+    "awkward",
+    "numpy",
+    "vector",
+    "fastjet",
+    "particle",
+    "pyarrow",
+    "h5py",
+    "scipy",
+}
+
 
 def utc_now():
     return datetime.now(timezone.utc).isoformat()
@@ -95,6 +107,7 @@ def code_provenance():
         "scipy",
         "hist",
         "mplhep",
+        "matplotlib",
     ]:
         versions[name] = importlib.metadata.version(name)
     env = repo / "environments/cms-gpu"
@@ -102,7 +115,9 @@ def code_provenance():
         git_revision=revision,
         git_dirty=dirty,
         module_sha256=files,
-        software_id=stable_id(*[f"{k}:{v}" for k, v in sorted(files.items())]),
+        software_id=stable_id(
+            *[f"{k}:{v}" for k, v in sorted(files.items()) if k in PRODUCTION_MODULES]
+        ),
         package_versions=versions,
         python=sys.version,
         executable=sys.executable,
@@ -342,7 +357,9 @@ def produce_source(
         max_chunks=max_chunks,
         events_per_chunk=events_per_chunk,
         normalization=normalization,
-        package_versions=provenance["package_versions"],
+        package_versions={
+            k: v for k, v in provenance["package_versions"].items() if k in PRODUCTION_PACKAGES
+        },
     )
     output.mkdir(parents=True, exist_ok=True)
     # Metadata is initialized by the CLI before workers start. Atomic exclusive

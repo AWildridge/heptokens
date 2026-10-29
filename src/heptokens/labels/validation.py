@@ -460,6 +460,7 @@ def validate_run(output, make_plots=False):
             family_bytes[family] = family_bytes.get(family, 0) + info["bytes"]
     report = dict(
         status="passed",
+        validation_module_sha256=sha256(__file__),
         validation_scope="committed partitions only; no claims for unprocessed data",
         unique_events=total_events,
         produced_rows=n_produced,
@@ -598,7 +599,9 @@ def plot_report(report_path, output):
             )
             ax.set_ylabel("Raw-weighted shape / bin")
             ax.legend(fontsize=11)
-            hep.label.exp_label(exp="TREASURE Simulation", text="", data=False, ax=ax, fontsize=12)
+            hep.label.exp_text(
+                exp="TREASURE Simulation", text="", lumi="(13 TeV)", ax=ax, fontsize=12
+            )
         fig.suptitle(f"QCD source {sample}; validation subset", fontsize=16)
         fig.tight_layout()
         fig.savefig(output / f"sample-{sample}.png", dpi=130)

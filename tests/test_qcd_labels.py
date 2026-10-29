@@ -400,3 +400,18 @@ def test_cartesian_slim_path_preserves_components_exactly():
     p = [100.25, -3.5, 4.25, 101.0]
     full = p4_fields(p)
     assert cartesian_fields(p) == {k: full[k] for k in ["px", "py", "pz", "energy"]}
+
+
+def test_plot_and_reader_changes_do_not_invalidate_production(monkeypatch):
+    import heptokens.labels.produce as producer
+
+    before = producer.code_provenance()
+    original = producer.sha256
+    monkeypatch.setattr(
+        producer,
+        "sha256",
+        lambda p: "plot-only-change" if str(p).endswith("validation.py") else original(p),
+    )
+    after = producer.code_provenance()
+    assert before["software_id"] == after["software_id"]
+    assert before["module_sha256"] != after["module_sha256"]
