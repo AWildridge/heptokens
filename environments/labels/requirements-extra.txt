@@ -1,0 +1,4 @@
+# Overlay on the frozen environments/cms-gpu environment; do not relock CMS.
+fastjet==3.5.2.0
+particle==0.26.0
+hepunits==2.4.2

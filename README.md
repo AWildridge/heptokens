@@ -8,6 +8,10 @@
 
 Tokenize HEP physics objects (jets, tracks, calorimeter clusters, …) with residual VQ-VAEs.
 
+For the paired CMS/ATLAS QCD scratch analysis dataset, see
+[slim preprocessing, truth labels, validation and Purdue batch commands](docs/qcd-label-production.md).
+The default postpones C/A trees; it does not train models or invent missing flavor truth.
+
 `heptokens` is an installable Python library. It ships:
 - **Data classes** — generic HDF5 datasets and Lightning DataModules for structured (object + constituent) and flat (dense, maskless) data.
 - **VQ-VAE model** — `LitVqVae` wrapping `ResidualVQ` with pluggable encoder/decoder.
