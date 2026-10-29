@@ -4,6 +4,12 @@ Status: investigation and proposed preprocessing change, 2026-10-29. The ROOT
 label producer still masks flavor targets. No bulk recovery, production flavor
 assignment, detector rerun or response change was performed for this study.
 
+Subsequent execution is documented in [Generator backfill](generator-backfill.md).
+The user authorized starting from accessible MiniAOD or AOD without waiting
+for an AOD restoration. That backfill preserves native generator products and
+adds a plain uproot-readable particle/ancestry TTree. Its live per-source
+receipts establish completion; this investigation note does not establish it.
+
 ## Where the information was lost
 
 The earliest retained exporter implementation already selects

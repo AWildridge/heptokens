@@ -11,6 +11,12 @@ partition. Use a new output directory, such as `slim-root-v2`. The earlier
 runtime projections do not validate the ROOT layout. A representative ROOT
 pilot and Purdue I/O/storage benchmark are required before full production.
 
+The separate [generator backfill](generator-backfill.md) restores retained
+packed/pruned ancestry and native generator products from original MiniAOD.
+It does not itself enable flavor targets in this label producer. Consume only
+verified per-source backfill receipts and validate the event/particle join
+before adding flavor or other ancestry-dependent targets.
+
 ## Locations and status
 
 The locations below describe the Perlmutter installation. The Purdue AF
