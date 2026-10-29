@@ -1,0 +1,62 @@
+[
+  {
+    "record": "63193",
+    "record_url": "https://opendata.cern.ch/record/63193",
+    "fragment_url": "https://cms-pdmv-prod.web.cern.ch/mcm/public/restapi/requests/get_fragment/BTV-RunIISummer20UL16GEN-00007",
+    "fragment_sha256": "b7144d9bbcd987213a767daa7b4d87618a4a7f4a89421b4485fde2e4e7ce768a",
+    "release": "CMSSW_10_6_19",
+    "cross_section": {
+      "filter_efficiency": "1.000e+00",
+      "neg_weight_fraction": "0.000e+00",
+      "total_value": "6.832e+03",
+      "total_value_uncertainty": "1.056e+00"
+    },
+    "gen_config_url": "https://opendata.cern.ch/eos/opendata/cms/configuration-files/MonteCarlo2016/e21d6e4d9417f1d5582478347251876c.configFile.py",
+    "gen_config_sha256": "3bc115bc4458becd5509f971a16b5cdbe8b02d8db186751d8b8aaf0d4578b341"
+  },
+  {
+    "record": "63217",
+    "record_url": "https://opendata.cern.ch/record/63217",
+    "fragment_url": "https://cms-pdmv-prod.web.cern.ch/mcm/public/restapi/requests/get_fragment/BTV-RunIISummer20UL16GEN-00008",
+    "fragment_sha256": "bc97e6f40b2784bef88973dbcc73d6195feb8dbb0f9a8a99578380dd005bc56d",
+    "release": "CMSSW_10_6_19",
+    "cross_section": {
+      "filter_efficiency": "1.000e+00",
+      "neg_weight_fraction": "0.000e+00",
+      "total_value": "5.519e+02",
+      "total_value_uncertainty": "3.151e-01"
+    },
+    "gen_config_url": "https://opendata.cern.ch/eos/opendata/cms/configuration-files/MonteCarlo2016/e21d6e4d9417f1d558247834725191f1.configFile.py",
+    "gen_config_sha256": "e22b0580fb6d072197ea00d91944912f2eec73397956d7d5fd73d2844a19a094"
+  },
+  {
+    "record": "63229",
+    "record_url": "https://opendata.cern.ch/record/63229",
+    "fragment_url": "https://cms-pdmv-prod.web.cern.ch/mcm/public/restapi/requests/get_fragment/BTV-RunIISummer20UL16GEN-00009",
+    "fragment_sha256": "de1bb0ae2a0b3d4cd423645d564be6ea1564b0103bfb83ecc666eb46e6fcbc57",
+    "release": "CMSSW_10_6_19",
+    "cross_section": {
+      "filter_efficiency": "1.000e+00",
+      "neg_weight_fraction": "0.000e+00",
+      "total_value": "1.565e+02",
+      "total_value_uncertainty": "2.350e-02"
+    },
+    "gen_config_url": "https://opendata.cern.ch/eos/opendata/cms/configuration-files/MonteCarlo2016/e21d6e4d9417f1d5582478347251a320.configFile.py",
+    "gen_config_sha256": "7d151059a4541a3783da5cc31b67a30e6105a4e02015e8379956705cf0f22b75"
+  },
+  {
+    "record": "63233",
+    "record_url": "https://opendata.cern.ch/record/63233",
+    "fragment_url": "https://cms-pdmv-prod.web.cern.ch/mcm/public/restapi/requests/get_fragment/BTV-RunIISummer20UL16GEN-00010",
+    "fragment_sha256": "d3820fce23e9bc42374835e6b3ded9460162506f208c1dcc8f031080e8827238",
+    "release": "CMSSW_10_6_19",
+    "cross_section": {
+      "filter_efficiency": "1.000e+00",
+      "neg_weight_fraction": "0.000e+00",
+      "total_value": "2.625e+01",
+      "total_value_uncertainty": "3.864e-03"
+    },
+    "gen_config_url": "https://opendata.cern.ch/eos/opendata/cms/configuration-files/MonteCarlo2016/e21d6e4d9417f1d5582478347251b20c.configFile.py",
+    "gen_config_sha256": "efeeafcfcaeb52fdd527a45dc99909aa5aae4450db2cd4466b435543da500b6d"
+  }
+]
