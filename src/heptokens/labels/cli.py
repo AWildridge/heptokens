@@ -25,6 +25,52 @@ def configure(path):
     return Config(**data)
 
 
+def detector_catalogs(output):
+    """Expose validated detector inputs in clearly named directories, without copies."""
+    from .analysis import partitions
+
+    output = Path(output)
+    committed = list(partitions(output))
+    for detector in ["CMS", "ATLAS"]:
+        directory = output / detector
+        directory.mkdir(exist_ok=True)
+        records = []
+        for source in committed:
+            link = directory / source.name
+            relative = Path("..") / source.name / "inputs" / detector
+            if link.is_symlink():
+                if link.resolve() != (directory / relative).resolve():
+                    raise ValueError("Detector catalog contains a conflicting symlink")
+            elif link.exists():
+                raise ValueError("Detector catalog would overwrite an existing path")
+            else:
+                link.symlink_to(relative, target_is_directory=True)
+            records.append(
+                dict(
+                    source_id=int(source.name.split("-")[1]),
+                    detector=detector,
+                    jets=str(Path(source.name) / "jets.parquet"),
+                    constituents=str(Path(source.name) / "constituents.parquet"),
+                    events=str(Path(source.name) / "events.parquet"),
+                )
+            )
+        atomic_json(
+            directory / "catalog.json",
+            dict(
+                detector=detector,
+                sources=records,
+                relative_to="this directory",
+                scope=read_json(output / "READY.json")["unique_events"],
+            ),
+        )
+        (directory / "README.txt").write_text(
+            f"{detector} selected reconstructed jets, constituents and event kinematics.\n"
+            "Source directories are relative symlinks into validated input partitions.\n"
+            "Truth targets and bookkeeping remain separate under source-NNNNN/.\n"
+        )
+    return dict(status="complete", detectors=["CMS", "ATLAS"], sources=len(committed))
+
+
 def organize(campaign, destination):
     """One directory rename, a compatibility alias, and small detector catalogs."""
     campaign, destination = Path(campaign).absolute(), Path(destination).absolute()
@@ -233,6 +279,8 @@ def main():
     plot = sub.add_parser("plot")
     plot.add_argument("--report", type=Path, required=True)
     plot.add_argument("--output", type=Path, required=True)
+    catalog = sub.add_parser("catalog")
+    catalog.add_argument("--output", type=Path, required=True)
     a = sub.add_parser("account-weights")
     a.add_argument("--campaign", type=Path, required=True)
     a.add_argument("--output", type=Path, required=True)
@@ -244,7 +292,10 @@ def main():
         from .validation import validate_run
 
         report = validate_run(args.output, args.plots)
+        detector_catalogs(args.output)
         result = {k: v for k, v in report.items() if k not in ["summaries", "unavailable"]}
+    elif args.command == "catalog":
+        result = detector_catalogs(args.output)
     elif args.command == "plot":
         from .validation import plot_report
 

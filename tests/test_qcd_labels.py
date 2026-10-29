@@ -10,7 +10,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from heptokens.labels.analysis import detector_batches, scan_table
-from heptokens.labels.cli import account_weights
+from heptokens.labels.cli import account_weights, detector_catalogs
 from heptokens.labels.physics import (
     Config,
     ca_tree,
@@ -362,6 +362,10 @@ def test_slim_awkward_reader_separates_inputs_and_bookkeeping(campaign, tmp_path
     assert scan_table(
         out, "bookkeeping/events", columns=["original_weight"]
     ).to_table().column_names == ["original_weight"]
+    detector_catalogs(out)
+    assert (out / "CMS/source-00000/jets.parquet").is_file()
+    assert (out / "ATLAS/source-00000/constituents.parquet").is_file()
+    assert detector_catalogs(out)["sources"] == 1
 
 
 def test_report_streams_one_event_and_preserves_weighted_sums(campaign, tmp_path, monkeypatch):

@@ -25,6 +25,9 @@ checksums, `validation.json`, `validation.md`, plots and `READY.json`.
 `READY.json` enumerates only validated partitions and explicitly states whether
 the **entire campaign** is complete. A validation prefix is not the full dataset.
 Never combine different output versions without checking their contracts.
+Validation also creates `CMS/` and `ATLAS/` directories with relative source
+links and small catalogs, making each detector's inputs directly accessible
+without duplicating data. Truth and bookkeeping remain in separate directories.
 
 The initial slim benchmark used 256 events and 3.48 MB, extrapolating to about
 2.6 TiB for the 210,542,000-event campaign. Small files have extra overhead;
