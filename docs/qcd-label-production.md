@@ -7,7 +7,14 @@ at the user's request; enable them only in a separate, versioned production.
 
 ## Locations and status
 
-Durable input:
+The locations below describe the Perlmutter installation. The Purdue AF
+workspace keeps its dataset archives on EOS; see
+[Purdue storage and verified staging](purdue-replay.md#execution-and-evidence).
+The current label reader requires a local committed campaign tree, so stage
+bounded verified sources before using it on Purdue workers. The Perlmutter
+validation recorded here does not establish a completed Purdue label run.
+
+Perlmutter durable input:
 
 `/global/cfs/cdirs/m2612/treasure/datasets/heptokens-anwildri/QCD-multijet-paired/`
 

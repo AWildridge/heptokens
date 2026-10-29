@@ -1,5 +1,5 @@
 _target_: heptokens.data.delphes_replay.DelphesReplayModule
-root: /pscratch/sd/a/anwildri/research/datasets/cms-qcd-default-pair-20261013
+root: ${oc.env:HEPTOKENS_REPLAY_ROOT}
 detector: CMS
 collection: Jet
 num_elements: 128

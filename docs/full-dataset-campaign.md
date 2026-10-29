@@ -66,7 +66,8 @@ as an empty collection. Default ordinary jet radii differ: CMS R=0.5,
 ATLAS R=0.6. This is not a matched large-R analysis or an isolated detector
 variation with otherwise identical reconstruction.
 
-Choose `datamodule=cms_qcd_delphes_cms` or `cms_qcd_delphes_atlas` after
+Set `HEPTOKENS_REPLAY_ROOT` to the verified local replay staging directory
+(or override `datamodule.root`). Choose `datamodule=cms_qcd_delphes_cms` or `cms_qcd_delphes_atlas` after
 readiness. Both select ordinary `Jet`. Source URI plus event identity defines
 a shared SHA256 80/10/10 event split, preventing the two detector views from
 crossing training/evaluation boundaries. The training adapter uses Cartesian

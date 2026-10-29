@@ -40,6 +40,28 @@ use distinct colors and dash patterns without markers.
 
 ## Execution and evidence
 
+This workspace runs on Purdue AF. Its dataset archives are on Purdue EOS; the
+destination recorded in the separate `purdue-setup/storage.json` is:
+
+```text
+davs://eos.cms.rcac.purdue.edu:9000/store/user/anwildri/heptokens-cms-qcd-20261016
+```
+
+Use authenticated GFAL/XRootD transfers and the canonical checksum/readback
+checks to stage bounded inputs on `/work` for AF/Dask workers, or `/depot` for
+Slurm. Workers must use the transfer protocols rather than depend on the EOS
+POSIX mount. Perlmutter CFS and scratch paths elsewhere in these documents
+describe that site's installation.
+
+The current training adapter and label producer read local files. For the
+CMS/ATLAS replay datamodule configs, set `HEPTOKENS_REPLAY_ROOT` to the verified
+local staging directory, or override `datamodule.root` explicitly. The adapter
+requires the matching `READY.json` and `training/` layout. A staged subset needs
+its own explicit handling; it must not borrow a full-campaign readiness claim.
+The QCD label producer similarly needs a verified local `--campaign` tree with
+committed sources. Passing an EOS URL directly to these local readers is
+unsupported; remote staging and validation are separate operations.
+
 `tools/replay_runtime.py` validates execution context, limits CPU processes and
 serializes transfers. The replay, scratch and transfer modules retain identity,
 accounting and checksum checks; interrupted or corrupt transfers must preserve
