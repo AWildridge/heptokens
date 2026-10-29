@@ -1,0 +1,15 @@
+--- a/modules/SimpleCalorimeter.cc
++++ b/modules/SimpleCalorimeter.cc
+@@ -451,9 +451,9 @@
+       particle = static_cast<Candidate *>(fParticleInputArray->At(number));
+       momentum = particle->Momentum;
+ 
+-      energy = momentum.E() * fTrackFractions[number];
+-
+-      if(fTrackFractions[number] > 1.0E-9)
++      energy = momentum.E() * fTowerFractions[number];
++
++      if(fTowerFractions[number] > 1.0E-9)
+       {
+         // compute total neutral energy
+         fNeutralEnergy += energy;

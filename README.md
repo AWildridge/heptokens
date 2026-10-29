@@ -29,6 +29,10 @@ cd heptokens
 pixi shell          # activates the environment
 ```
 
+For the updated CMS analysis environment with EAF GPU support (including ROOT,
+Pythia, LHAPDF, and current CUDA PyTorch), see
+[the CMS GPU Pixi environment](environments/cms-gpu/README.md).
+
 ### 2. Write your datamodule config
 
 Create a YAML file describing your data. This is the only config you must supply — the library bundles everything else (model, callbacks, trainer).
@@ -359,3 +363,7 @@ original = inverse_preprocess_batch(batch, cst_fn=cst_scaler, jet_fn=jet_scaler)
 
 ## Contributors
 Jeffrey Krupa, Samuel Klein, Michael Kagan
+
+Dataset setup on Perlmutter: [Aspen Open Jets, JetClass and JetClass-II](docs/datasets-perlmutter.md).
+Includes lazy loading, split-preserving samples, full-shard staging commands,
+and detector provenance/default-card replay results.
