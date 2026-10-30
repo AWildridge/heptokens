@@ -4,18 +4,23 @@ import fcntl
 import json
 from pathlib import Path
 import time
+import random
 
 
 @contextmanager
 def controlled_slot(directory, limits, key, default):
     directory=Path(directory);directory.mkdir(parents=True,exist_ok=True)
     handles={}
+    rng=random.Random()
+    delay=.25
     try:
         while True:
             config=json.loads(Path(limits).read_text()) if limits and Path(limits).exists() else {}
             count=int(config.get(key,default))
             if not 1<=count<=250:raise ValueError('Invalid I/O slot count')
-            for number in range(count):
+            # Bounded random probes avoid every one of 1000 clients scanning
+            # all shared lock files four times per second.
+            for number in rng.sample(range(count),min(count,8)):
                 if number not in handles:handles[number]=(directory/('slot-%d'%number)).open('a+')
                 handle=handles[number]
                 try:fcntl.lockf(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
@@ -23,7 +28,8 @@ def controlled_slot(directory, limits, key, default):
                 try:yield
                 finally:fcntl.lockf(handle,fcntl.LOCK_UN)
                 return
-            time.sleep(.25)
+            time.sleep(delay*rng.uniform(.75,1.25))
+            delay=min(3,delay*1.5)
     finally:
         for handle in handles.values():handle.close()
 

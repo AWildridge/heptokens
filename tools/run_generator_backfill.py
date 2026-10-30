@@ -144,7 +144,7 @@ def reserve_remote(config, key, size, sha256):
     import fcntl
     ledger = Path(config['output'], 'remote-ledger.json')
     with open(str(ledger) + '.lock', 'a+') as lock:
-        fcntl.lockf(lock, fcntl.LOCK_EX)
+        fcntl.flock(lock, fcntl.LOCK_EX)
         data = json.loads(ledger.read_text()) if ledger.exists() else {}
         item = dict(bytes=size, sha256=sha256)
         if key in data and data[key] != item:
@@ -229,9 +229,90 @@ def run_task(config, source, limit=-1, cached=None, publish=True):
     lane = config.get('pilot_lane','pilot') if limit > 0 else 'sources'
     shared = Path(config['output'],lane,'%05d'%int(source['task']))
     shared.mkdir(parents=True,exist_ok=True)
+    if (shared/'complete.json').exists():
+        return checked_receipt(shared/'complete.json',source)
     with open(shared/'task.lock','a+') as lock:
-        fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
-        return _run_task(config,source,limit,cached,publish)
+        try:
+            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        except BlockingIOError:
+            # A scheduler can reschedule a task before its previous process
+            # exits. This is a lease wait, not a failed source or lost work.
+            return dict(status='source-busy',task=int(source['task']))
+        from generator_scratch import admit
+        with admit(config) as admitted:
+            if not admitted:return dict(status='scratch-busy',task=int(source['task']))
+            return _run_task(config,source,limit,cached,publish)
+
+
+def checked_receipt(path, source):
+    item=json.loads(Path(path).read_text())
+    if item['source']!=source or item['status']!='complete':
+        raise ValueError('Completed source identity/status differs')
+    proof=item['remote']
+    if proof['status']!='two-stable-full-readbacks-passed':
+        raise ValueError('Completed source lacks durable proof')
+    for readback in ['first','second']:
+        if proof[readback]['sha256']!=item['sha256'] or proof[readback]['bytes']!=item['bytes'] or proof[readback]['readback']!='passed':
+            raise ValueError('Completed source proof differs')
+    return item
+
+
+def attempt_url(config, lane, tag, sha256):
+    # ROOT embeds per-write UUIDs/timestamps. Regenerated physics-equivalent
+    # files need not be byte-identical: never overwrite an earlier attempt.
+    return config['remote'].rstrip('/')+'/'+lane+'/'+tag+'/attempts/'+sha256+'/generator.root'
+
+
+def recover_source(config, source, shared, scratch, command):
+    """Adopt proven output or restore a validated orphan before regenerating."""
+    for candidate in sorted(shared.glob('attempt-*/validated.json')):
+        old=json.loads(candidate.read_text())
+        if old.get('source')!=source:raise ValueError('Recovery source identity differs')
+        proof_path=candidate.parent/'remote-proof.json'
+        if proof_path.exists():
+            old.update(remote=json.loads(proof_path.read_text()),status='complete',finished=time.time())
+            temporary=scratch/'adoption.json';atomic(temporary,old)
+            checked_receipt(temporary,source)
+            atomic(shared/'complete.json',old)
+            return old
+        # Legacy attempts used a single fixed URL. Prefer the matching ledger
+        # payload; other regenerated hashes at that URL cannot be adopted.
+        url=old.get('remote_url')
+        if not url:
+            ledger=Path(config['output'],'remote-ledger.json')
+            prior=json.loads(ledger.read_text()).get('sources/'+shared.name) if ledger.exists() else None
+            if not prior or prior['sha256']!=old['sha256']:continue
+            url=config['remote'].rstrip('/')+'/sources/'+shared.name+'/generator.root'
+        destination=scratch/('restore-'+candidate.parent.name+'.root')
+        local=None
+        if old.get('scratch'):
+            for path in Path(old['scratch']).glob('generator*.root'):
+                if path.stat().st_size==old['bytes'] and digest(path)==old['sha256']:
+                    local=path;destination=path;break
+        request=scratch/'restore-request.json'
+        atomic(request,dict(action='restore',source=str(destination),url=url,
+               bytes=old['bytes'],sha256=old['sha256'],proof=str(scratch/'restore-proof.json'),
+               limits=str(Path(config['output'],'io-limits.json')),slots=str(Path(config['output'],'io-slots'))))
+        try:
+            if local is None:
+                command(['bash',config.get('transfer_script',str(Path(config['root'],'purdue-setup/gen-backfill-transfer.sh'))),str(request)],'restore-'+candidate.parent.name,3600)
+        except subprocess.CalledProcessError:
+            # An absent/partial orphan is retained. A fresh attempt gets its
+            # own URL; it must not replace or relabel these bytes as verified.
+            atomic(scratch/('unusable-'+candidate.parent.name+'.json'),dict(candidate=str(candidate),url=url,status='not-restored'))
+            if destination.exists():destination.unlink()  # failed scratch readback only
+            continue
+        info=old.get('input_verification')
+        checks=validate(destination,expected=old['validation']['events'],source_info=info if isinstance(info,dict) else None)
+        request_data=json.loads(request.read_text());request_data.update(action='publish',proof=str(proof_path),checkpoint=str(candidate.parent/'transfer-checkpoint.json'))
+        atomic(request,request_data)
+        command(['bash',config.get('transfer_script',str(Path(config['root'],'purdue-setup/gen-backfill-transfer.sh'))),str(request)],'recover-verify-'+candidate.parent.name,7200)
+        old.update(remote=json.loads(proof_path.read_text()),validation=checks,status='complete',finished=time.time(),recovered_from=str(candidate))
+        atomic(shared/'complete.json',old)
+        if local is not None and local.parent.parent==Path('/tmp') and local.parent.name.startswith('gen-backfill-'+shared.name+'-'):
+            shutil.rmtree(local.parent)
+        return old
+    return None
 
 
 def _run_task(config, source, limit=-1, cached=None, publish=True):
@@ -242,12 +323,13 @@ def _run_task(config, source, limit=-1, cached=None, publish=True):
     shared = Path(config['output'], lane, tag)
     shared.mkdir(parents=True, exist_ok=True)
     complete = shared / 'complete.json'
-    if complete.exists(): return json.loads(complete.read_text())
+    if complete.exists(): return checked_receipt(complete,source)
     attempt = shared / ('attempt-' + uuid.uuid4().hex)
     attempt.mkdir()
     scratch = Path(tempfile.mkdtemp(prefix='gen-backfill-' + tag + '-'))
     root = Path(config['root'])
-    tools = root / 'heptokens/tools'
+    tools = Path(config.get('tools_dir',str(root/'heptokens/tools')))
+    os.environ['HEPTOKENS_BACKFILL_TOOLS']=str(tools)
     state = dict(task=task, started=began, scratch=str(scratch), source=source, limit=limit)
     atomic(attempt / 'state.json', state)
     def command(args, name, timeout=3600):
@@ -258,11 +340,26 @@ def _run_task(config, source, limit=-1, cached=None, publish=True):
         for name, expected_hash in config['software'].items():
             if digest(root / name) != expected_hash:
                 raise ValueError('Campaign software changed: ' + name)
+        if publish:
+            recovered=recover_source(config,source,shared,scratch,command)
+            if recovered is not None:
+                shutil.rmtree(scratch)
+                return recovered
         streaming = not cached and config.get('input_mode') == 'stream'
         source_info = None
         inp = Path(cached) if cached else scratch / 'input.root'
         if streaming:
-            source_info = remote_source_info(source)
+            from replay_io_control import controlled_slot
+            errors=[]
+            for trial in range(3):
+                try:
+                    with controlled_slot(Path(config['output'],'io-slots/metadata'),str(Path(config['output'],'io-limits.json')),'max_metadata',32):
+                        source_info=remote_source_info(source)
+                    break
+                except (subprocess.SubprocessError,OSError,TimeoutError) as error:
+                    errors.append(repr(error))
+                    if trial==2:raise
+                    time.sleep(2*(trial+1))
             atomic(attempt/'remote-input-check.json',source_info)
             state['input_url'] = source['uri']
         elif not cached:
@@ -324,14 +421,17 @@ def _run_task(config, source, limit=-1, cached=None, publish=True):
                      validated=time.time())
         if output.stat().st_size > config.get('max_output_bytes', 4000000000):
             raise ValueError('Source output exceeds admitted size')
+        if publish:
+            state['remote_url']=attempt_url(config,lane,tag,state['sha256'])
         atomic(attempt / 'validated.json', state)
         if publish:
-            reserve_remote(config, lane + '/' + tag, state['bytes'], state['sha256'])
-            url = config['remote'].rstrip('/') + '/' + lane + '/' + tag + '/generator.root'
+            reserve_remote(config, lane + '/' + tag+'/attempts/'+state['sha256'], state['bytes'], state['sha256'])
+            url = state['remote_url']
             request = dict(source=str(output), url=url, proof=str(attempt / 'remote-proof.json'),
+                           checkpoint=str(attempt/'transfer-checkpoint.json'),
                            limits=str(Path(config['output'], 'io-limits.json')), slots=str(Path(config['output'], 'io-slots')))
             atomic(scratch / 'transfer.json', request)
-            command(['bash', str(root / 'purdue-setup/gen-backfill-transfer.sh'), str(scratch / 'transfer.json')], 'transfer', 7200)
+            command(['bash',config.get('transfer_script',str(root/'purdue-setup/gen-backfill-transfer.sh')), str(scratch / 'transfer.json')], 'transfer', 7200)
             state['remote'] = json.loads((attempt / 'remote-proof.json').read_text())
         else:
             state['retained_output'] = str(output)
@@ -342,20 +442,24 @@ def _run_task(config, source, limit=-1, cached=None, publish=True):
     except BaseException:
         state.update(status='failed', error=traceback.format_exc(), finished=time.time())
         atomic(attempt / 'failure.json', state)
-        # Keep the only unverified generated output. Input is reproducible from
-        # the frozen manifest, but cleanup is left explicit for failed attempts.
+        # Keep every validated payload. Failed pre-validation intermediates
+        # are reproducible from the frozen source and must not fill a node.
+        if 'validation' not in state:
+            atomic(attempt/'unvalidated-scratch-cleanup.json',dict(reason='source failed before full validation',
+                   source=source,scratch=str(scratch),files={p.name:p.stat().st_size for p in scratch.iterdir() if p.is_file()}))
+            shutil.rmtree(scratch)
         raise
 
 
 async def set_slots(dask_worker):
-    await dask_worker.set_resources(generator_source=2)
+    await dask_worker.set_resources(generator_source=1)
 
 
 def slots_plugin():
     from distributed import WorkerPlugin
     class GeneratorSlots(WorkerPlugin):
         async def setup(self, worker):
-            await worker.set_resources(generator_source=2)
+            await worker.set_resources(generator_source=1)
     return GeneratorSlots()
 
 
@@ -372,6 +476,8 @@ def main():
     p.add_argument('--defer-tasks', nargs='*', type=int, default=[])
     args = p.parse_args()
     config = json.loads(Path(args.config).read_text())
+    if args.limit<0:
+        raise SystemExit('Full production uses watch_generator_backfill.py --config <campaign-recovery.json>; this entrypoint is reserved for bounded validation pilots.')
     manifest = json.loads(Path(config['manifest']).read_text())
     sources = [s for s in manifest['files'] if args.tasks is None or int(s['task']) in args.tasks]
     if args.limit < 0 and not Path(config['output'], 'PREFLIGHT-PASSED.json').exists():

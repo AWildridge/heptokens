@@ -82,3 +82,52 @@ measurements and status live under
 Prefix-based size and throughput projections are estimates; full-source and
 concurrent measurements are needed to judge the five-hour target. Dispatch is
 not evidence that all 210,542,000 events have completed.
+
+## Worker-loss recovery (2026-10-30)
+
+The initial controller stopped after cumulative failures on 2026-10-29 at
+23:25 UTC. Saved receipts covered 55.3 million events. Worker restarts exposed
+two transaction defects: a rescheduled task treated an existing source lease
+as a failure, and regeneration tried to reuse a logical-source reservation
+despite ROOT's per-write UUID/timestamp differences. The cumulative failure
+limit then stopped admission. Historical evidence and failed attempts remain.
+
+Production now runs `watch_generator_backfill.py --config campaign-recovery.json`.
+The old entrypoint is restricted to bounded validation pilots. Each source runs
+in a separate process holding its own lease, with one source per worker. Busy
+leases are deferred. Source failures are retried with backoff independently;
+integrity failures are quarantined visibly while other sources continue.
+Admission alternates between pThat bins. The independent watchdog restarts a
+crashed controller or one whose heartbeat is older than five minutes. Controller
+restarts recount verified receipts and can reconnect/recreate its own cluster.
+
+Each newly generated payload uses a SHA256-addressed attempt URL. Prior payloads
+and reservations are preserved, including abandoned uploads, under the byte cap.
+Upload and first-readback checkpoints are saved durably. Recovery first adopts
+an existing complete proof, otherwise restores exact bytes from a validated
+orphan, validates the ROOT content and performs two stable full readbacks. An
+absent/partial orphan is preserved and a fresh attempt gets a separate URL.
+Neither differing ROOT hashes nor a worker restart permit overwriting a payload.
+
+The runtime tools and site wrapper are copied to an immutable campaign snapshot
+on WORK and pinned in the per-source provenance. I/O slot acquisition uses bounded
+random probes with jitter/backoff to avoid shared-filesystem lock storms at large
+worker counts. CPU workers have one core and 8 GiB; the requested 1,000-worker
+scale is subject to gateway resource limits (748 accepted at restart). Parallel
+readers/uploads/readbacks remain separately bounded and dynamically configurable.
+
+Scratch reservations are grouped by node boot identity because different worker
+containers share the node's backing disk. Admission conservatively requires
+physical free space for all active reservations plus a new source's full output
+and one full readback, with additional safety space. This ephemeral-disk check
+does not replace centrally reported HOME/WORK quota checks. Low-space workers
+stop receiving new source tasks. Failed intermediates are cleaned only after a
+durable failure record and only if full validation has not passed. Existing local
+validated bytes are reused on retry when their recorded SHA256 still matches.
+
+Evidence includes `recovery-tests.txt` (21 passing regression tests),
+`RECOVERY-PREFLIGHT-PASSED.json` (eight full sources), and
+`worker-loss-injection.json`. A real worker was terminated after upload; the
+rescheduled transaction used the exact uploaded SHA256. Five previously stranded
+outputs were restored and verified without regenerating their content. These
+tests exercise recovery, not detector or flavor-label physics validation.
