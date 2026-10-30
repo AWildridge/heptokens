@@ -275,6 +275,9 @@ def main():
     r.add_argument("--config", type=Path)
     r.add_argument("--normalization", type=Path)
     r.add_argument("--dask-address")
+    r.add_argument("--generator-index", type=Path)
+    r.add_argument("--generator-directory", type=Path)
+    r.add_argument("--audit-generator-scales", action="store_true")
     v = sub.add_parser("validate")
     v.add_argument("--output", type=Path, required=True)
     v.add_argument("--plots", action="store_true")
@@ -349,6 +352,9 @@ def main():
             max_chunks=args.max_chunks,
             events_per_chunk=args.events_per_chunk,
             normalization=normalization,
+            generator_index=args.generator_index,
+            generator_directory=args.generator_directory,
+            audit_generator_scales=args.audit_generator_scales,
         )
         results = []
         if args.dask_address:

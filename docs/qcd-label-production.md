@@ -5,17 +5,22 @@ with reconstructed inputs, truth targets and bookkeeping in separate tables.
 No models are trained. C/A trees and angular targets are **postponed by default**
 at the user's request; enable them only in a separate, versioned production.
 
-The current output contract is `qcd-labels-root-v2`: one `labels.root` per source
-partition. Use a new output directory, such as `slim-root-v2`. The earlier
-4,000-event Parquet validation remains a historical v1 result; its size and
-runtime projections do not validate the ROOT layout. A representative ROOT
-pilot and Purdue I/O/storage benchmark are required before full production.
+The current output contract is `qcd-labels-root-gen-v3`: one `labels.root`
+per source, with 24 typed TTrees, explicit missingness branches, and a hash-bound
+reference to the complete generator archive. The stable-only ROOT v2 and older
+Parquet v1 releases remain historical datasets. Always choose a fresh versioned
+output directory; different contracts cannot be combined.
 
-The separate [generator backfill](generator-backfill.md) restores retained
-packed/pruned ancestry and native generator products from original MiniAOD.
-It does not itself enable flavor targets in this label producer. Consume only
-verified per-source backfill receipts and validate the event/particle join
-before adding flavor or other ancestry-dependent targets.
+The [completed generator backfill](generator-backfill.md) is now consumed via
+verified per-source receipts. The producer checks the frozen source manifest,
+two complete remote readback proofs, and a fresh local generator SHA256 before
+joining event identities, weights and every packed particle to the original
+stable replay. MiniAOD pruning cannot be reversed: this preserves all retained
+generator information, not the original unpruned event history.
+
+The four-worker Purdue pilot and the remaining production gates are recorded in
+[label pilot, 2026-10-30](qcd-label-pilot-20261030.md). Full production is held
+pending the user's assessment of missing inputs and labels.
 
 ## Locations and status
 
@@ -129,8 +134,11 @@ Only targets derived from that stable state are shared between detectors.
   as `original_split` for audit; use the new bookkeeping split for analysis.
 
 Original weights remain float64. Cross section and boundaries are preserved.
-Generator HT and event pthat are null with false validity masks. The sample
-selection boundaries are not event measurements. Physical stitching weight is
+Generator HT remains null with a false validity mask. With the verified
+generator join, event pThat is recovered from GenEventInfo `binningValues[0]`;
+`qScale` is stored separately. The inspected original CMSSW_10_6_19 Pythia8
+hadronizer fills that value from `info.pTHat()` (the pilot provenance saves the
+source). Sample selection boundaries remain distinct from event measurements. Physical stitching weight is
 `original_weight * cross_section_pb / measured_sample_sum_weights`.
 It is null until a complete, replica-aware weight-accounting pass validates
 the sample denominator. Never assume unit weights from event counts or equal
@@ -182,20 +190,23 @@ All missing targets have explicit masks/reasons in metadata and tables:
 The original MiniAOD/AOD files retain more information than the compressed
 stable-particle replay. A bounded original-input audit and a generator-only
 recovery proposal are documented in
-[generator ancestry recovery](qcd-generator-ancestry-recovery.md). The proposal
-preserves the existing reconstructed events; flavor targets remain masked until
-the new extraction and association pipeline is implemented and validated.
+[generator ancestry recovery](qcd-generator-ancestry-recovery.md). The implemented join and pilot preserve the existing reconstructed events.
+Retained heavy-hadron labels are available with the generator-backed contract;
+parton/shower labels and reconstructed constituent truth links remain masked.
 
-- Heavy-hadron flavor: no decayed b/c hadrons or ancestry are retained.
-  Never classify their stable daughters or reconstructed b-tags as truth flavor.
-  A future re-export should retain terminal weakly decaying b/c hadrons and
-  mother links for ghost association. Record charm from b separately;
-  use b precedence for b-containing jets and exclude b-descended charm from
-  prompt-c counts, while retaining detailed hadron PDG IDs and ancestry flags.
-  That is a future definition, not an available label in this version.
-- Generator-associated parton flavor: no supported parton association exists.
-  Need outgoing hard partons/status flags and ancestry with an explicit
-  association definition. Current label is `unknown`, not light flavor.
+- Heavy-hadron flavor: select terminal retained b/c hadrons with the inspected
+  CMSSW_10_6_25 `CandMCTagUtils` PDG predicate and no daughter of the same heavy
+  flavor. Ghost-associate these to the common anti-kt R=0.5 truth jets, using
+  P4 scale 1e-20. The pilot audits 1e-18 and 1e-22 too, with identical labels and
+  physical memberships. Preserve original jet P4 and IDs. Use b precedence;
+  label c only for associated charm without a retained b ancestor. `none` means
+  no associated retained b or prompt-c hadron, not a parton-level light label.
+  Store b, c, b-descended c and prompt-c pruned indices separately. No additional
+  hadron pT cut is imposed. This is a declared retained-MiniAOD definition, not
+  an assertion of equivalence to every CMS official flavor prescription.
+- Generator-associated parton flavor: outgoing retained partons, status flags
+  and ancestry are available, but a jet-parton association definition has not
+  been approved. Current label is `unknown`, not light flavor.
 - Reco-object species/ancestry: compacting discarded `Track.Particle`,
   `Tower.Particles` and other truth TRefs. Need original ROOT or a reference-
   preserving re-compaction. The association schema is list-valued so a tower
@@ -268,7 +279,7 @@ Production cache identity excludes plotting and reader modules. Their changes
 do not invalidate the expensive label stage; validation records its own code hash.
 
 Each `source-NNNNN/labels.root` contains TTrees named `bookkeeping/events`,
-`truth/{events,jets,particles,nodes,angles}`, `inputs/{CMS,ATLAS}/TABLE`, and
+`truth/{events,jets,particles,generator_records,generator_particles,nodes,angles}`, `inputs/{CMS,ATLAS}/TABLE`, and
 `targets/{CMS,ATLAS}/TABLE`. `label_schema` is a JSON TObjString containing field
 types, units and configuration/software hashes. Deferred/empty tables still
 exist as typed, zero-entry TTrees. Each source's `COMMIT.json` records the ROOT
@@ -281,7 +292,7 @@ validity flags such as `parton_flavor_valid` and `normalization_valid`.
 `read_arrays`/`scan_table` restore missing values as Awkward options; direct
 uproot users must apply the presence branches themselves. Floating-point widths
 remain float32 for particle/constituent P4 and float64 for jet/event quantities
-and weights; run/lumi/event remain uint64. Jagged membership and variation-weight
+and weights; pruned generator P4 and vertices are float64. Run/lumi/event remain uint64. Jagged membership and variation-weight
 branches retain their complete lists.
 
 Read the ROOT files directly with uproot, selecting only needed branches:

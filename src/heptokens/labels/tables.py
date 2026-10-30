@@ -193,13 +193,71 @@ for detector in ["CMS", "ATLAS"]:
         unavailable_reason=S,
     )
 
+SCHEMAS["truth/particles"].update(
+    gen_packed_index=INT, gen_status_flags=INT, last_pruned_indices="var * int64"
+)
+SCHEMAS["truth/jets"].update(
+    **{
+        name: "var * int64"
+        for name in [
+            "b_hadron_indices",
+            "c_hadron_indices",
+            "c_from_b_indices",
+            "prompt_c_hadron_indices",
+        ]
+    }
+)
+SCHEMAS["truth/generator_records"] = dict(
+    event_id=S,
+    source_uri=S,
+    source_sha256=S,
+    source_entry=INT,
+    tier=S,
+    packed_count=INT,
+    pruned_count=INT,
+    join_valid=B,
+    qscale=F,
+    binning_values="var * float64",
+    process_id=INT,
+    pdf_valid=B,
+    pdf_id1=INT,
+    pdf_id2=INT,
+    alpha_qcd=F,
+    alpha_qed=F,
+    ghost_p4_max_delta_GeV=F,
+)
+SCHEMAS["truth/generator_particles"] = dict(
+    event_id=S,
+    particle_index=INT,
+    pdg_id="int32",
+    status=INT,
+    three_charge=INT,
+    status_flags=INT,
+    collision_id=INT,
+    x_mm=F,
+    y_mm=F,
+    z_mm=F,
+    generated_mass=F,
+    mother_indices="var * int64",
+    daughter_indices="var * int64",
+    terminal_b=B,
+    terminal_c=B,
+    has_b_ancestor=B,
+    **P4,
+)
+for detector in ["CMS", "ATLAS"]:
+    SCHEMAS[f"targets/{detector}/jet_matches"].update(
+        heavy_hadron_flavor=S, heavy_hadron_flavor_valid=B
+    )
+
 
 def schema_for(name, metadata):
     fields = {}
     for key, dtype in SCHEMAS[name].items():
         unit = (
             "GeV"
-            if key
+            if key.endswith("_GeV")
+            or key
             in [
                 "px",
                 "py",
@@ -215,6 +273,8 @@ def schema_for(name, metadata):
                 "generator_pthat",
                 "selection_low_GeV",
                 "selection_high_GeV",
+                "qscale",
+                "binning_values",
             ]
             else "radian"
             if key in ["phi", "psi", "dijet_delta_phi"]

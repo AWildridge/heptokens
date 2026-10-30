@@ -168,6 +168,54 @@ def check_tree(nodes, jets):
 def check_slim_links(batch):
     """Validate species/membership joins without assuming reco P4 sums equal jets."""
     event_ids = {r["event_id"] for r in batch["bookkeeping/events"]}
+    records = {r["event_id"]: r for r in batch.get("truth/generator_records", [])}
+    generated = {
+        (r["event_id"], r["particle_index"]): r for r in batch.get("truth/generator_particles", [])
+    }
+    if records:
+        if set(records) != event_ids:
+            raise ValueError("Generator-record event coverage differs")
+        if len(generated) != len(batch["truth/generator_particles"]):
+            raise ValueError("Duplicate generator particle key")
+        for key, node in generated.items():
+            for role in ["mother_indices", "daughter_indices"]:
+                if any((key[0], i) not in generated for i in node[role]):
+                    raise ValueError("Dangling generator graph edge")
+        for eid, record in records.items():
+            if (
+                not record["join_valid"]
+                or sum(k[0] == eid for k in generated) != record["pruned_count"]
+            ):
+                raise ValueError("Generator graph count or join-valid flag differs")
+        for particle in batch["truth/particles"]:
+            if (
+                not particle["ancestry_valid"]
+                or particle["gen_packed_index"] is None
+                or not 0
+                <= particle["gen_packed_index"]
+                < records[particle["event_id"]]["packed_count"]
+            ):
+                raise ValueError("Invalid stable-to-packed generator join")
+            if any((particle["event_id"], i) not in generated for i in particle["mother_indices"]):
+                raise ValueError("Dangling stable-particle mother edge")
+        for jet in batch["truth/jets"]:
+            for role in [
+                "b_hadron_indices",
+                "c_hadron_indices",
+                "c_from_b_indices",
+                "prompt_c_hadron_indices",
+            ]:
+                if any((jet["event_id"], i) not in generated for i in jet[role]):
+                    raise ValueError("Dangling heavy-hadron reference")
+            expected = (
+                "b"
+                if jet["b_hadron_indices"]
+                else "c"
+                if jet["prompt_c_hadron_indices"]
+                else "none"
+            )
+            if not jet["heavy_hadron_flavor_valid"] or jet["heavy_hadron_flavor"] != expected:
+                raise ValueError("Heavy-hadron flavor differs from memberships")
     if {r["event_id"] for r in batch["truth/events"]} != event_ids:
         raise ValueError("Truth event-table coverage differs from bookkeeping")
     particles = {(p["event_id"], p["particle_index"]): p for p in batch["truth/particles"]}
@@ -254,6 +302,10 @@ def validate_run(output, make_plots=False):
                     raise ValueError("ROOT table type, entry count or schema differs")
         for batch in partition_batches(partition):
             check_slim_links(batch)
+            if metadata["contract"].get("generator_index_sha256") and len(
+                batch["truth/generator_records"]
+            ) != len(batch["bookkeeping/events"]):
+                raise ValueError("Missing generator record in generator-backed production")
             book = rows(batch, "bookkeeping/events")
             by_event = {r["event_id"]: r for r in book}
             if len(by_event) != len(book):
@@ -371,10 +423,21 @@ def validate_run(output, make_plots=False):
                                         not j["heavy_hadron_flavor_valid"],
                                     )
                                     s.count("parton_flavor_missing", not j["parton_flavor_valid"])
-                                    s.count("heavy_flavor_unknown_sumw", weight(eid, mode))
-                                    s.count("parton_flavor_unknown_sumw", weight(eid, mode))
-                                    s.count("heavy_flavor_unknown_sumw2", weight(eid, mode) ** 2)
-                                    s.count("parton_flavor_unknown_sumw2", weight(eid, mode) ** 2)
+                                    if not j["heavy_hadron_flavor_valid"]:
+                                        s.count("heavy_flavor_unknown_sumw", weight(eid, mode))
+                                        s.count(
+                                            "heavy_flavor_unknown_sumw2", weight(eid, mode) ** 2
+                                        )
+                                    else:
+                                        s.count(
+                                            "heavy_flavor_" + j["heavy_hadron_flavor"] + "_sumw",
+                                            weight(eid, mode),
+                                        )
+                                    if not j["parton_flavor_valid"]:
+                                        s.count("parton_flavor_unknown_sumw", weight(eid, mode))
+                                        s.count(
+                                            "parton_flavor_unknown_sumw2", weight(eid, mode) ** 2
+                                        )
                     for level, angles in [("truth", truth_angles), ("reco", reco_angles)]:
                         for a in angles:
                             eid = a["event_id"]

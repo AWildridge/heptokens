@@ -67,7 +67,14 @@ UNAVAILABLE = {
     ),
 }
 
-PRODUCTION_MODULES = {"__init__.py", "physics.py", "source.py", "tables.py", "produce.py"}
+PRODUCTION_MODULES = {
+    "__init__.py",
+    "physics.py",
+    "source.py",
+    "tables.py",
+    "produce.py",
+    "generator.py",
+}
 PRODUCTION_PACKAGES = {
     "awkward",
     "numpy",
@@ -137,7 +144,7 @@ def code_provenance():
     )
 
 
-def event_tables(ev, sample, cfg, normalization=None):
+def event_tables(ev, sample, cfg, normalization=None, audit_generator_scales=False):
     tables = {name: [] for name in SCHEMAS}
     eid, ref = ev["event_id"], ev["reference"]
     raw_weight = float(ref["weight"])
@@ -318,11 +325,24 @@ def event_tables(ev, sample, cfg, normalization=None):
         tables[f"inputs/{detector}/events"].append(
             dict(event_id=eid, detector=detector, **event_kinematics(reco_jets))
         )
+    if "generator" in ev:
+        from .generator import enrich_tables
+
+        enrich_tables(ev, tables, cfg, audit_scales=audit_generator_scales)
     return tables
 
 
 def produce_source(
-    campaign, output, task, cfg, max_chunks=None, events_per_chunk=None, normalization=None
+    campaign,
+    output,
+    task,
+    cfg,
+    max_chunks=None,
+    events_per_chunk=None,
+    normalization=None,
+    generator_index=None,
+    generator_directory=None,
+    audit_generator_scales=False,
 ):
     start = time.monotonic()
     usage_start = resource.getrusage(resource.RUSAGE_SELF)
@@ -345,6 +365,18 @@ def produce_source(
     if entry["task"] != task:
         raise ValueError("Manifest source-task indexing differs")
     sample = sample_records(manifest)[str(entry["record"])]
+    if bool(generator_index) != bool(generator_directory):
+        raise ValueError("Generator index and verified local directory are both required")
+    generator_reader = None
+    if generator_index:
+        from .generator import GeneratorReader
+
+        gen_index = read_json(generator_index)
+        if gen_index["source_manifest_sha256"] != manifest_hash:
+            raise ValueError("Generator index belongs to another frozen source manifest")
+        generator_reader = GeneratorReader(
+            Path(generator_directory) / ("%05d.root" % task), gen_index["sources"][str(task)], entry
+        )
     complete = read_json(source / "COMPLETE.json")
     if complete.get("manifest_sha256", manifest_hash) != manifest_hash:
         raise ValueError("Source completion refers to another manifest")
@@ -363,6 +395,8 @@ def produce_source(
         max_chunks=max_chunks,
         events_per_chunk=events_per_chunk,
         normalization=normalization,
+        generator_index_sha256=sha256(generator_index) if generator_index else None,
+        audit_generator_scales=audit_generator_scales,
         package_versions={
             k: v for k, v in provenance["package_versions"].items() if k in PRODUCTION_PACKAGES
         },
@@ -380,6 +414,22 @@ def produce_source(
                     "Output configuration/software differs; choose a new versioned output"
                 )
         else:
+            unavailable = dict(UNAVAILABLE)
+            generator_method = None
+            if generator_reader is not None:
+                from .generator import METHOD
+
+                generator_method = METHOD
+                unavailable.pop("heavy_hadron_flavor", None)
+                unavailable.pop("incoming_and_hard_process", None)
+                unavailable["parton_flavor"] = (
+                    "Retained partons/status flags are archived; a versioned jet-parton "
+                    "association convention has not been approved."
+                )
+                unavailable["generator_ht_and_pthat"] = (
+                    "pThat is recovered from original binningValues; generator HT remains "
+                    "invalid pending an explicit LHE/parton definition."
+                )
             atomic_json(
                 output / "metadata.json",
                 dict(
@@ -388,7 +438,8 @@ def produce_source(
                     provenance=provenance,
                     samples=sample_records(manifest),
                     source_files=len(manifest["files"]),
-                    unavailable=UNAVAILABLE,
+                    unavailable=unavailable,
+                    generator_method=generator_method,
                     question=(
                         "Which retained truth and detector-comparison targets can be "
                         "produced without inventing generator information?"
@@ -427,6 +478,8 @@ def produce_source(
             for name, info in saved["files"].items():
                 if sha256(target / name) != info["sha256"]:
                     raise ValueError("Existing sidecar partition checksum mismatch")
+            if generator_reader is not None:
+                generator_reader.close()
             return saved
         if target.exists():
             raise ValueError("Uncommitted partition exists; preserve it and choose a new output")
@@ -446,13 +499,15 @@ def produce_source(
             for chunk in chunks:
                 first = True
                 for ev in iter_events(chunk, cfg, events_per_chunk, entry):
+                    if generator_reader is not None:
+                        generator_reader.join(ev)
                     if first:
                         evidence.append(dict(chunk=chunk.name, **ev["evidence"]))
                         first = False
                     norm = (
                         None if normalization is None else normalization["samples"][ev["sample_id"]]
                     )
-                    tables = event_tables(ev, sample, cfg, norm)
+                    tables = event_tables(ev, sample, cfg, norm, audit_generator_scales)
                     for name, rows in tables.items():
                         buffered[name].extend(rows)
                     count += 1
@@ -492,11 +547,16 @@ def produce_source(
                 tables=table_info,
                 files=file_info,
                 synchronization=evidence,
+                generator_join=generator_reader.stats if generator_reader is not None else None,
             )
             atomic_json(temporary / "COMMIT.json", result)
             temporary.rename(target)
+            if generator_reader is not None:
+                generator_reader.close()
             return result
         except BaseException as error:
+            if generator_reader is not None:
+                generator_reader.close()
             try:
                 writers.close()
             except Exception:
