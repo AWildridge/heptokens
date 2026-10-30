@@ -199,3 +199,21 @@ def test_node_scratch_refuses_full_disk_before_generating_payload(tmp_path,monke
     from types import SimpleNamespace
     monkeypatch.setattr(generator_scratch.os,'statvfs',lambda path:SimpleNamespace(f_bavail=0,f_frsize=1))
     with generator_scratch.admit(config(tmp_path)) as admitted:assert not admitted
+
+
+def test_node_scratch_tolerates_an_older_owner_finishing_cleanup(tmp_path,monkeypatch):
+    import generator_scratch
+    import hashlib
+    node=hashlib.sha256(Path('/proc/sys/kernel/random/boot_id').read_bytes()).hexdigest()[:24]
+    directory=tmp_path/'scratch-reservations'/node;directory.mkdir(parents=True)
+    stale=directory/'old-owner.json';stale.write_text(json.dumps(dict(bytes=999999999999)))
+    unlink=Path.unlink
+    raced=[]
+    def finishing_owner(path,**kwargs):
+        if path==stale and not raced:
+            raced.append(True)
+            unlink(path,missing_ok=True)
+        return unlink(path,**kwargs)
+    monkeypatch.setattr(Path,'unlink',finishing_owner)
+    with generator_scratch.admit(dict(config(tmp_path),max_output_bytes=0,scratch_safety_bytes=0)) as admitted:assert admitted
+    assert raced

@@ -125,7 +125,7 @@ stop receiving new source tasks. Failed intermediates are cleaned only after a
 durable failure record and only if full validation has not passed. Existing local
 validated bytes are reused on retry when their recorded SHA256 still matches.
 
-Evidence includes `recovery-tests.txt` (21 passing regression tests),
+Evidence includes `recovery-tests.txt` (22 passing regression tests),
 `RECOVERY-PREFLIGHT-PASSED.json` (eight full sources), and
 `worker-loss-injection.json`. A real worker was terminated after upload; the
 rescheduled transaction used the exact uploaded SHA256. Five previously stranded

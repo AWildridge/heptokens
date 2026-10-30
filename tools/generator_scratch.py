@@ -34,9 +34,11 @@ def admit(config):
                 other=path.with_suffix('.lock')
                 with other.open('a+') as probe:
                     try:fcntl.flock(probe,fcntl.LOCK_EX|fcntl.LOCK_NB)
-                    except BlockingIOError:reserved+=json.loads(path.read_text())['bytes']
+                    except BlockingIOError:
+                        try:reserved+=json.loads(path.read_text())['bytes']
+                        except FileNotFoundError:pass  # older owner finished cleanup
                     else:
-                        path.unlink();other.unlink(missing_ok=True)
+                        path.unlink(missing_ok=True);other.unlink(missing_ok=True)
             st=os.statvfs('/tmp')
             free=st.f_bavail*st.f_frsize
             if free>=reserved+amount+safety:
@@ -44,5 +46,7 @@ def admit(config):
                 admitted=True
         try:yield admitted
         finally:
-            metadata.unlink(missing_ok=True)
-            lease_path.unlink(missing_ok=True)
+            with (directory/'admission.lock').open('a+') as admission:
+                fcntl.flock(admission,fcntl.LOCK_EX)
+                metadata.unlink(missing_ok=True)
+                lease_path.unlink(missing_ok=True)
