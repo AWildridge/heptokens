@@ -3,8 +3,9 @@
 The generator-backed label pilot completed **4,000 events on four CPU Dask
 workers**, with 24 ordinary TTrees in each source's `labels.root`. Structural
 validation and a separate comparison with the stable-only baseline passed.
-Full preprocessing is **held for the user's review of missing information**;
-no 1,000-worker production run has been launched.
+No 1,000-worker production run has been launched. The interpretation of missing
+information was corrected following the user's 31 October review; see
+[clarifications and revised label plan](qcd-label-review-20261031.md).
 
 ## Inputs, method and scope
 
@@ -112,34 +113,30 @@ isolated source subprocesses, independent retries and canonical two stable
 full SHA256 remote readbacks. A prefix success does not validate unbenchmarked
 end-to-end remote production at 1,000 workers.
 
-## Information requiring user review
+## Clarifications after user review (2026-10-31)
 
-`missing-information.json` records each omission and remedy.
+The immutable 30 October pilot measurements above are unchanged. Its original
+`missing-information.json` is a historical record, not the current list of
+approval gates. The user confirmed the transfer and completion records are on
+NERSC, requested light/strange/gluon tags, and accepted the retained-simulation
+scope. See the [point-by-point correction](qcd-label-review-20261031.md).
 
-1. The Purdue paired-input snapshot has **4,540 sources / 210,266,000 events**.
-   Tasks **0, 1, 2, 3, 5, 6**, totaling **276,000 events**, are separately held at
-   Perlmutter (`nersc-transfer-kit-20261026-space-saving/README.txt` and
-   `source-ownership.json`). Generator backfill covers all 4,546. A fresh GFAL check returned HTTP 404
-   for each expected Purdue `sources/TASK/COMPLETE.json`; see
-   `missing-paired-remote-check.json`. This does not exclude another namespace.
-   A read-only
-   BatchMode SSH attempt to the known NERSC DTN stopped at host-key verification;
-   no remote inventory was read. Supply verified accessible paired locations,
-   or explicitly select a 4,540-source partial run with these six held back.
-2. Compacting discarded reconstructed constituent truth references. Generator
-   backfill cannot identify the original reco constituent-to-particle links.
-   Species/ancestry labels remain masked.
-3. Parton flavor and shower categories require an explicit association convention;
-   the retained graph alone does not define jet flavor or turn C/A into shower
-   genealogy. The pilot leaves these unknown.
-4. Full unpruned ancestry, per-particle times, spin states and original pileup
-   particles are unavailable. MiniAOD retention defines the recoverable scope.
-5. Generator HT is undefined pending an explicit LHE/parton definition. Physical
-   normalization is recoverable work: measure full replica-aware sample sumw
-   before emitting pb weights; pilot uses only raw generator weights.
+- All 4,546 source identities belong in the final catalog. The Purdue snapshot
+  covers only its 4,540 owned sources; it did not establish missing NERSC data.
+  Reading and verifying the completed NERSC inventory is an access/catalog task.
+- Exact reconstructed constituent contributor links were discarded by our
+  compaction. They are normally stored in native Delphes ROOT TRefs. This limits
+  exact constituent truth labels, not jet-level parton flavor tagging.
+- Light u/d, strange and gluon jet tags can use the retained partons and an
+  inspected CMS selection/ghost-association prescription. They are planned for
+  the next pilot; ROOT v3 above does not already contain those labels.
+- Accepted missing original times/spin/unpruned history remain provenance facts,
+  not new approval requirements. C/A shower targets remain deferred.
+- Truth/CMS/ATLAS selected-jet HT is already calculated. A literal scalar sum of
+  final retained hadron pT can be added separately. Undefined stage/object naming
+  for the extra `generator_ht` field was not a fundamental data limitation.
 
-The concrete decision is whether the retained-heavy-hadron definition and
-masked targets are acceptable, and whether to resolve the six paired inputs
-first or begin with the available 4,540. Full campaign READY also requires the
-remaining accounting and end-to-end I/O checks; this pilot's READY explicitly
-has `campaign_complete=false`.
+The next implementation checks are the expanded flavor/HT pilot, complete
+input catalog, sample-weight accounting and bounded end-to-end I/O validation.
+No additional flavor labels, full-campaign completion or 1,000-worker throughput
+are established by this documentation correction.

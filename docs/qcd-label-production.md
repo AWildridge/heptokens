@@ -19,8 +19,9 @@ stable replay. MiniAOD pruning cannot be reversed: this preserves all retained
 generator information, not the original unpruned event history.
 
 The four-worker Purdue pilot and the remaining production gates are recorded in
-[label pilot, 2026-10-30](qcd-label-pilot-20261030.md). Full production is held
-pending the user's assessment of missing inputs and labels.
+[label pilot, 2026-10-30](qcd-label-pilot-20261030.md). The [31 October clarification](qcd-label-review-20261031.md) records the
+requested u/d, strange and gluon extension and corrects the original input/HT
+interpretation. The ROOT v3 pilot has not yet implemented that extension.
 
 ## Locations and status
 
@@ -205,21 +206,25 @@ parton/shower labels and reconstructed constituent truth links remain masked.
   hadron pT cut is imposed. This is a declared retained-MiniAOD definition, not
   an assertion of equivalence to every CMS official flavor prescription.
 - Generator-associated parton flavor: outgoing retained partons, status flags
-  and ancestry are available, but a jet-parton association definition has not
-  been approved. Current label is `unknown`, not light flavor.
+  and ancestry are available. The inspected CMS Pythia8 selection/ghost
+  association supplies a concrete baseline for the requested u/d, strange and
+  gluon extension. That extension is planned and must be pilot-validated before
+  scale-up. The current v3 parton label is `unknown`, not light flavor.
 - Reco-object species/ancestry: compacting discarded `Track.Particle`,
   `Tower.Particles` and other truth TRefs. Need original ROOT or a reference-
   preserving re-compaction. The association schema is list-valued so a tower
   can retain many truth particles; no one-to-one particle labels are invented.
   Available truth species, charge and P4 remain in the common truth table.
-- Incoming flavors, hard-process IDs, generator HT/pthat, original pileup/time:
-  need retained GenEventInfoProduct/LHE/pruned/GEN information as appropriate.
-  Synthetic HepMC header zeros are not recorded hard-process labels.
+- Incoming PDF IDs, signal-process ID and pThat are restored with the verified
+  generator join. Selected truth/reco jet HT is already present; a separately
+  named scalar sum of retained stable-hadron pT is planned. Original pileup
+  particles and measured times are not restored by those metadata fields.
 - Helicity, density matrices and spin-on/off labels are not manufactured.
 
-Discrete flavor probes cannot be supported by this stable-only replay as it
-stands. Kinematic and matching studies are available; flavor and generator-
-shower studies require restoring additional truth information.
+The generator-backed ROOT v3 pilot supports heavy-hadron flavor studies.
+The retained partons support extending it to u/d, strange and gluon tags; this
+does not depend on exact reconstructed constituent truth links. Detailed
+generator-shower/C/A correspondence is a separate, deferred target.
 
 ## Optional postponed C/A stage
 
