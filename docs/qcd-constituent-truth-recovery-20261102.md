@@ -149,3 +149,30 @@ attempted because the available VOMS proxy reports zero remaining lifetime.
 No validated payload or surviving native ROOT was deleted. A renewed proxy is
 needed for a new remote publication/readback proof, not for these completed
 local extraction and parity checks.
+
+## NERSC findings supplied after the investigation
+
+The user subsequently reported an independent NERSC inventory and successful
+recovery for task252/chunk0, both detectors:1,000 hard events,223,222 constituent
+rows and271,194 contributor edges, all18 compact datasets/view bitwise equal.
+No further native ROOT was found in49 inspected archives. All210,542 chunks
+retain their replay assets. These are user-reported results; the original NERSC
+reports have not been retrieved or independently inspected from this session.
+They are saved under `code/perlmutter-setup/results/qcd-native-root-investigation-20261102/`
+as `REPORT.txt`, `native-roots.tsv`, `pilot-results.json` and `replay-readiness.json`.
+
+Task252 is distinct from the Purdue native-root tasks84,1373,2785,4151. Combining
+both inventories therefore identifies101 native paired chunks, covering101,000
+stored source-event entries. Native links have been extracted on5,000 of those;
+the remaining96,000 native entries need parity checks and extraction. That leaves
+**210,441 paired chunks /210,441,000 stored source-event entries** without a known
+native ROOT copy. These are scheduling counts, not a newly established global
+deduplicated generator-event count. The separate replay proof for source84 is
+already within Purdue coverage and is not counted twice.
+
+The combined machine-readable proposal is
+`purdue-setup/results/constituent-truth-recovery-20261102/combined-recovery-plan.json`.
+Exact native contributor recovery for the remainder would add a near-full
+Delphes replay to the original label-preprocessing scope. That bulk replay
+has not been authorized or started. Whole-jet flavor labeling can proceed from
+the generator backfill independently of this optional constituent-link recovery.
