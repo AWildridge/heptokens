@@ -6,6 +6,26 @@ links. The existing compact detector dataset need not be replaced: this
 investigation demonstrates adding ROOT link sidecars after exact payload checks.
 Jet-level flavor labels do not require those constituent contributor links.
 
+**Later update, 2026-11-02:** the user explicitly retired the 100k validation
+dataset. Its 200 native ROOT files were deleted along with the validation
+payloads, without creating a new EOS backup. The inventory and 101k native
+coverage figures below describe the earlier investigation, not current storage.
+Small provenance, cards, commands and plots were preserved in
+`purdue-setup/results/work-retirement-20261102/preserved-provenance.tar.gz`;
+`provenance-verified.json` records all 866 checked members. The ten extracted
+link sidecars and separate source84 replay ROOT pair remain, with fresh hashes
+in that directory's `post-retirement-integrity.json`. The NERSC task252 files
+are unaffected by this Purdue cleanup (their survival is user-reported).
+
+Already extracted links still cover 5,000 stored source-event entries across
+the two sites. The former 96,000-event native-only extraction shortcut is gone.
+Recovering the remaining **210,537,000** source-event entries now needs replay
+unless other native copies are found. This counts source/chunk entries for
+scheduling, not newly deduplicated hard-event identities. The current plan is
+`purdue-setup/results/constituent-truth-recovery-20261102/combined-recovery-plan-after-retirement.json`.
+No bulk replay or label production was started by the cleanup. Do not
+automatically restore or regenerate the retired validation dataset.
+
 ## What was lost, and why
 
 Delphes generated the contributor references. Our compaction omitted them:
