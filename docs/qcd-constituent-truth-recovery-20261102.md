@@ -6,6 +6,12 @@ links. The existing compact detector dataset need not be replaced: this
 investigation demonstrates adding ROOT link sidecars after exact payload checks.
 Jet-level flavor labels do not require those constituent contributor links.
 
+**Current execution update:** the user subsequently authorized the full backfill
+with up to1,000 workers and unattended monitoring. The controller and monitor
+are launched, with automatic scale-out gated on renewal of the expired CMS proxy
+and successful EOS preflight. See [the execution contract](qcd-constituent-link-backfill.md).
+Earlier statements below that bulk replay is unapproved are historical.
+
 **Later update, 2026-11-02:** the user explicitly retired the 100k validation
 dataset. Its 200 native ROOT files were deleted along with the validation
 payloads, without creating a new EOS backup. The inventory and 101k native
