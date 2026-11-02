@@ -215,6 +215,9 @@ parton/shower labels and reconstructed constituent truth links remain masked.
   preserving re-compaction. The association schema is list-valued so a tower
   can retain many truth particles; no one-to-one particle labels are invented.
   Available truth species, charge and P4 remain in the common truth table.
+  The [native-link recovery pilot](qcd-constituent-truth-recovery-20261102.md)
+  demonstrates recovery from retained ROOT or a parity-checked detector replay;
+  these additive sidecars are not yet consumed by the v3 label producer.
 - Incoming PDF IDs, signal-process ID and pThat are restored with the verified
   generator join. Selected truth/reco jet HT is already present; a separately
   named scalar sum of retained stable-hadron pT is planned. Original pileup

@@ -19,6 +19,11 @@ catalog. No replacement event generation or new Rucio transfer follows from
 this inventory-location mismatch. The present session has not independently
 re-read the NERSC receipts; the prior SSH attempt stopped at host verification.
 
+The [2 November recovery investigation](qcd-constituent-truth-recovery-20261102.md)
+subsequently found 100k-event native ROOT coverage, recovered links on a 4k
+paired-event pilot and proved a 1k paired-event replay can supply additive links
+without changing the original compact payload. See that note for measured scope.
+
 ## 2. Reconstructed constituent truth links
 
 This question asks: **which generated stable particle(s) produced this detector
