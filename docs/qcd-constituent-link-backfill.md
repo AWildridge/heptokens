@@ -11,6 +11,13 @@ Site configuration and current evidence are external to Git at
 Inspect `campaign.json`, `controller-status.json`, `watchdog-status.json` and
 `last-agent-trigger.json`. Dispatch and local parity are not durable completion.
 
+On2026-11-03 the expired CMS child proxy was successfully renewed for48h from
+the still-valid standard temporary parent proxy. The earlier claim that renewal
+required the encrypted long-term key was incorrect. All five pilot archives
+then passed two complete EOS readbacks and bulk execution started. Six NERSC
+sources remain outside the Purdue input snapshot. Check live receipts for the
+current completed scope; this paragraph is not a full-campaign READY marker.
+
 ## Recovery and integrity
 
 `tools/constituent_backfill_worker.py` downloads the original input over HTTPS
@@ -47,6 +54,15 @@ before its durable receipt is committed and temporary native ROOTs are removed.
 Sources become complete only when all expected group receipts reconcile.
 
 ## Execution and monitoring
+
+The resource plugin schedules its scheduler RPC after worker startup rather
+than blocking the startup hook. A scheduler plugin also wakes source tasks that
+were submitted before their required worker resources appeared. A regression
+test creates an initially empty local cluster, submits constrained work, and
+grows to one then two workers. This fixes the scale-out startup race and pending
+`no-worker` tasks without changing recovery physics or integrity requirements.
+The live frozen campaign receives the same operational repair through
+`operational_controller.py`, preserving its pinned scientific file hashes.
 
 `tools/run_constituent_backfill.py` provides `pilot`, `controller` and `watch`
 modes with `--config PATH`. The Dask scheduler/workers use the maintained global

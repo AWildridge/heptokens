@@ -51,10 +51,45 @@ def dispatch(config, source, pilot=False):
 def one_source_plugin():
     from distributed import WorkerPlugin
     class OneSource(WorkerPlugin):
-        async def setup(self, worker):
-            # One source process per worker, irrespective of worker thread count.
-            await worker.set_resources(constituent_source=1)
+        def setup(self, worker):
+            async def publish_when_registered():
+                import asyncio
+                for attempt in range(600):
+                    status = worker.status.name
+                    if status in ['closing', 'closed', 'failed']:
+                        return
+                    if status == 'running':
+                        try:
+                            await worker.set_resources(constituent_source=1)
+                            return
+                        except (KeyError, OSError, TimeoutError):
+                            pass
+                    await asyncio.sleep(.5)
+                raise RuntimeError('Worker never published constituent-source resource')
+            # A plugin may run before scheduler registration finishes. Blocking
+            # setup on set_resources then fails new workers during scale-out.
+            worker.loop.add_callback(publish_when_registered)
     return OneSource()
+
+
+def resource_wakeup_plugin():
+    from distributed import SchedulerPlugin
+    class ResourceWakeup(SchedulerPlugin):
+        def start(self, scheduler):
+            from tornado.ioloop import PeriodicCallback
+            def wake():
+                recommendations = {}
+                for task in list(scheduler.unrunnable):
+                    if (task.resource_restrictions or {}).get('constituent_source'):
+                        if scheduler.valid_workers(task):
+                            recommendations[task.key] = 'processing'
+                if recommendations:
+                    scheduler.transitions(recommendations, stimulus_id='constituent-resources-ready')
+            self.timer = PeriodicCallback(wake, 2000)
+            self.timer.start()
+        async def close(self):
+            self.timer.stop()
+    return ResourceWakeup()
 
 
 def load_sources(config):
@@ -115,6 +150,7 @@ def connect(config):
         cluster = gateway.connect(config['cluster'], shutdown_on_close=False)
     client = Client(cluster)
     client.register_plugin(one_source_plugin(), name='constituent-one-source')
+    client.register_plugin(resource_wakeup_plugin(), name='constituent-resource-wakeup')
     return cluster, client
 
 
